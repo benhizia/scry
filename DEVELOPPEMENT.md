@@ -170,7 +170,9 @@ fonctionne, avec des contraintes larges du type `pygccxml>=2.2`.
 
 Un `requirements.txt` a un autre rôle : figer les versions exactes d'un
 environnement reproductible, obtenu par `pip freeze`. Il sert au déploiement,
-pas à la déclaration du paquet.
+pas à la déclaration du paquet. Le dépôt n'en fournit pas : celui qui existait
+recopiait la déclaration au lieu de geler des versions, et avait déjà divergé.
+Deux listes de dépendances finissent toujours par se contredire.
 
 Règle simple : une nouvelle bibliothèque utilisée par le code va dans
 `pyproject.toml`, puis `pip install -e .` la récupère.

@@ -26,9 +26,18 @@ Pour le fonctionnement de l'environnement Python lui-même, voir
 ```
 python -m venv .venv
 .venv\Scripts\activate
-pip install -e .[ui]
+pip install -e ".[ui]"
+copy scry.ini.example scry.ini
 scry check
 ```
+
+Les guillemets autour de `".[ui]"` ne sont pas facultatifs hors de PowerShell :
+bash et zsh interprètent les crochets comme un motif de nom de fichier.
+
+`scry.ini` n'est pas versionné : il contient des chemins propres au poste. Le
+dépôt fournit `scry.ini.example`, à copier puis renseigner — au minimum
+`[paths] castxml` si castxml n'est pas dans le `PATH`. Sans aucun `scry.ini`,
+Scry démarre sur ses valeurs par défaut et cherche castxml dans le `PATH`.
 
 `pip install -e .` installe le paquet en mode éditable : le code n'est pas
 copié, le venv pointe sur `src/scry/`. Toute modification est prise en compte
@@ -92,12 +101,13 @@ namespaces, et la comparaison d'ABI entre deux versions d'un header.
 
 ```
 pyproject.toml              métadonnées, dépendances, point d'entrée
-scry.ini                    paramétrage, aucun chemin en dur dans le code
+scry.ini.example            modèle de paramétrage, à copier en scry.ini
+scry.ini                    paramétrage local, non versionné
 README.md
 DEVELOPPEMENT.md            environnement Python, packaging, publication
-data/                       headers d'essai
-generated/                  sortie
-tests/
+Data/                       headers d'essai
+Generated/                  sortie, non versionnée
+tests/                      tests du modèle, sans castxml ni MSVC
 src/
   scry/
     __init__.py
@@ -176,7 +186,8 @@ qu'elle marchait en développement.
 
 ## 5. Configuration
 
-`scry.ini` est renseigné une fois par poste. Toute valeur est surchargeable par
+`scry.ini` est copié depuis `scry.ini.example` et renseigné une fois par
+poste. Il n'est pas versionné. Toute valeur est surchargeable par
 une variable d'environnement `SCRY_<SECTION>_<CLÉ>`, par exemple
 `SCRY_CASTXML_TOOLSET=14.38`.
 

@@ -1,5 +1,0 @@
-pygccxml>=2.2
-Jinja2>=3.0
-imgui[glfw]>=2.0
-PyOpenGL>=3.1
-glfw>=2.5

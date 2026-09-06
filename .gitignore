@@ -7,6 +7,12 @@ __pycache__/
 build/
 dist/
 
+# --- Configuration locale ---------------------------------------------------
+# Renseigne une fois par poste, avec des chemins absolus (castxml, toolset)
+# qui n'ont de sens que sur cette machine. Le modele versionne est
+# scry.ini.example ; le copier en scry.ini au premier clone.
+scry.ini
+
 # --- Sorties de Scry --------------------------------------------------------
 # Le header d'introspection est regenere par 'scry gen' a partir du header
 # source : c'est un artefact, pas une source. Le versionner ferait diverger le

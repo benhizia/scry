@@ -1,5 +1,9 @@
 ; ---------------------------------------------------------------------------
-; Scry - parametrage. A renseigner une fois par poste.
+; Scry - modele de parametrage.
+;
+; Copier ce fichier en scry.ini a la racine du depot, puis le renseigner. Le
+; scry.ini reel n'est pas versionne : il contient des chemins propres au poste,
+; qui casseraient chez tout autre utilisateur.
 ; Les chemins relatifs sont resolus depuis le dossier de ce fichier.
 ; Toute valeur peut etre surchargee par une variable d'environnement SCRY_<SECTION>_<CLE>,
 ; par exemple SCRY_CASTXML_TOOLSET=14.38
@@ -7,7 +11,7 @@
 
 [paths]
 ; Laisser vide pour laisser pygccxml chercher castxml dans le PATH.
-castxml = X:/GitRepos/castxml-windows/castxml/bin/castxml.exe
+castxml =
 ; Header parse au demarrage.
 header = Data/test_structs_simple.h
 output = Generated
