@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scry"
+version = "0.2.0"
+description = "Introspection C++ automatique a partir de headers tiers non modifiables"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+
+dependencies = [
+    "pygccxml>=2.2",
+    "Jinja2>=3.0",
+]
+
+[project.optional-dependencies]
+# Interface graphique. La chaine d'introspection et la generation fonctionnent
+# sans, ce qui permet d'utiliser Scry en CI ou sur une machine sans OpenGL.
+ui = [
+    "imgui[glfw]>=2.0",
+    "PyOpenGL>=3.1",
+    "glfw>=2.5",
+    # PyOpenGL passe par numpy pour transferer les tableaux de sommets. Sans
+    # lui il retombe sur ctypes en avertissant a chaque lancement.
+    "numpy>=1.21",
+]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1",
+]
+
+# Point d'entree. Apres 'pip install -e .', la commande 'scry' est disponible
+# dans le venv, et fonctionne depuis n'importe quel repertoire.
+[project.scripts]
+scry = "scry.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Les templates Jinja voyagent avec le paquet. Sans cette declaration, ils
+# seraient absents du wheel et la generation echouerait apres installation.
+[tool.setuptools.package-data]
+"scry.codegen" = ["templates/*.j2"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+# Les tests portent sur le modele, qui ne depend ni de castxml ni de pygccxml.
+# Data/ ne contient que les headers d'essai, pas des tests.
+[tool.pytest.ini_options]
+testpaths = ["tests"]

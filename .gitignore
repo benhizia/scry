@@ -1,0 +1,36 @@
+# --- Environnement Python ---------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# --- Sorties de Scry --------------------------------------------------------
+# Le header d'introspection est regenere par 'scry gen' a partir du header
+# source : c'est un artefact, pas une source. Le versionner ferait diverger le
+# depot du layout reel des le premier changement de toolset.
+Generated/
+generated/
+
+# Cache pygccxml. Binaire, volumineux, et lie aux chemins absolus du poste.
+.scry_cache/
+.bpg_cache/
+
+# --- Outils ----------------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Layout des fenetres ImGui, ecrit au format brut a chaque fermeture de l'UI.
+imgui.ini
+
+# Genere par l'extension C/C++ Runner, avec des chemins absolus propres au
+# poste. Rien ici ne concerne le projet Python.
+.vscode/
+
+# --- Systeme ---------------------------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store

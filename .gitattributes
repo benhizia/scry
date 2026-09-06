@@ -1,0 +1,18 @@
+# Normalisation des fins de ligne : LF dans le depot, quel que soit le poste.
+# Sans cela, un aller-retour Windows / CI Linux produit des diffs entiers qui
+# masquent les vraies modifications.
+* text=auto eol=lf
+
+# Le C++ genere est ecrit en LF explicite par le generateur (newline="\n").
+*.h    text eol=lf
+*.hpp  text eol=lf
+*.j2   text eol=lf
+*.py   text eol=lf
+*.ini  text eol=lf
+*.md   text eol=lf
+*.toml text eol=lf
+
+# Binaires : jamais de conversion.
+*.dat  binary
+*.png  binary
+*.exe  binary

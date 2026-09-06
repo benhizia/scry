@@ -1,0 +1,148 @@
+{#- Template d'introspection ImGui genere par BuffyPyGen.
+
+     Principe : chaque niveau d'imbrication introduit un pointeur de base local
+     et les offsets sont RELATIFS au parent. C'est ce qui permet de boucler sur
+     un tableau de structures avec un simple stride, la ou des offsets absolus
+     n'auraient decrit que l'element 0.
+-#}
+// =============================================================================
+//  Fichier genere par BuffyPyGen. Ne pas editer a la main.
+//  Source      : {{ source_header }}
+//  Chaine      : castxml + pygccxml, cible {{ compiler }} {{ arch }}, {{ std }}
+// =============================================================================
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+#include "imgui.h"
+#include "{{ source_header }}"
+
+namespace {{ namespace }} {
+
+// -----------------------------------------------------------------------------
+// Lecture non alignee depuis un bloc d'octets. Le visualiseur ne possede pas
+// l'objet : il recoit une base et lit par offset, que la base vienne d'une
+// instance locale, d'une memoire partagee ou d'un buffer reseau.
+// -----------------------------------------------------------------------------
+template <typename T>
+inline T read_at(const std::uint8_t* base, std::size_t offset)
+{
+    T value{};
+    std::memcpy(&value, base + offset, sizeof(T));
+    return value;
+}
+
+inline const char* read_cstr(const std::uint8_t* base, std::size_t offset)
+{
+    return reinterpret_cast<const char*>(base + offset);
+}
+
+inline std::uint64_t read_bits(const std::uint8_t* base, std::size_t offset,
+                               unsigned bit_offset, unsigned bit_width)
+{
+    std::uint32_t word = 0;
+    std::memcpy(&word, base + offset, sizeof(word));
+    const std::uint64_t mask = (bit_width >= 64u) ? ~0ull : ((1ull << bit_width) - 1ull);
+    return (static_cast<std::uint64_t>(word) >> bit_offset) & mask;
+}
+
+{% macro emit_field(f, indent, base, level) %}
+{%- set pad = ' ' * indent %}
+{%- set sub = 'b%d' % level %}
+{% if f.is_static %}
+{{ pad }}// {{ f.name }} : membre statique, hors instance.
+{% elif f.truncated in ('cycle', 'depth', 'opaque') %}
+{{ pad }}ImGui::TextDisabled("{{ f.label }} : {{ f.type }} [{{ f.truncated }}]");
+{% elif f.kind == 'array' and f.children %}
+{%- set elem = f.children[0] %}
+{%- set stride = (f.size // f.array_len) if (f.size and f.array_len) else 0 %}
+{{ pad }}if (ImGui::TreeNode("{{ f.label }}")) {
+{{ pad }}    for (int i = 0; i < {{ f.array_len or 0 }}; ++i) {
+{{ pad }}        ImGui::PushID(i);
+{{ pad }}        const std::uint8_t* {{ sub }} = {{ base }} + {{ f.offset }} + i * {{ stride }};
+{{ pad }}        if (ImGui::TreeNode("element", "[%d] @%d", i, {{ f.offset }} + i * {{ stride }})) {
+{% for child in elem.children %}
+{{ emit_field(child, indent + 12, sub, level + 1) }}
+{% endfor %}
+{{ pad }}            ImGui::TreePop();
+{{ pad }}        }
+{{ pad }}        ImGui::PopID();
+{{ pad }}    }
+{{ pad }}    ImGui::TreePop();
+{{ pad }}}
+{% elif f.is_char_array %}
+{{ pad }}ImGui::Text("{{ f.name }} = \"%.{{ f.array_len }}s\"", read_cstr({{ base }}, {{ f.offset }}));
+{% elif f.kind == 'array' %}
+{%- set stride = (f.size // f.array_len) if (f.size and f.array_len) else 0 %}
+{{ pad }}if (ImGui::TreeNode("{{ f.label }}")) {
+{{ pad }}    for (int i = 0; i < {{ f.array_len or 0 }}; ++i)
+{{ pad }}        ImGui::Text("[%d] @%d  {{ f.elem_type }}", i, {{ f.offset }} + i * {{ stride }});
+{{ pad }}    ImGui::TreePop();
+{{ pad }}}
+{% elif f.children %}
+{{ pad }}if (ImGui::TreeNode("{{ f.label }}")) {
+{{ pad }}    ImGui::TextDisabled("{{ f.type }}  @{{ f.offset }}  {{ f.size }} o");
+{{ pad }}    const std::uint8_t* {{ sub }} = {{ base }} + {{ f.offset }};
+{% for child in f.children %}
+{{ emit_field(child, indent + 4, sub, level + 1) }}
+{% endfor %}
+{{ pad }}    ImGui::TreePop();
+{{ pad }}}
+{% elif f.bit_width %}
+{{ pad }}ImGui::Text("{{ f.name }} : {{ f.bit_width }} = %llu", static_cast<unsigned long long>(
+{{ pad }}    read_bits({{ base }}, {{ f.offset }}, {{ f.bit_offset or 0 }}, {{ f.bit_width }})));
+{% elif f.kind == 'pointer' %}
+{{ pad }}ImGui::Text("{{ f.name }} = 0x%016llX", static_cast<unsigned long long>(
+{{ pad }}    read_at<std::uintptr_t>({{ base }}, {{ f.offset }})));
+{% elif f.kind == 'enum' %}
+{{ pad }}ImGui::Text("{{ f.name }} = %d", read_at<int>({{ base }}, {{ f.offset }}));
+{% elif f.printf_fmt %}
+{{ pad }}ImGui::Text("{{ f.name }} = {{ f.printf_fmt }}", {{ f.printf_expr | replace('{expr}', 'read_at<' ~ f.type ~ '>(' ~ base ~ ', ' ~ f.offset ~ ')') }});
+{% else %}
+{{ pad }}ImGui::TextDisabled("{{ f.name }} : {{ f.type }} non gere");
+{% endif %}
+{%- endmacro %}
+
+{% for s in structs %}
+// =============================================================================
+// {{ s.name }}   sizeof={{ s.size }}  alignof={{ s.align }}  padding={{ s.padding }}
+{% if s.is_polymorphic %}
+// Type polymorphe : un pointeur de vtable occupe le debut de l'objet et les
+// offsets ci-dessous en tiennent compte. Ne pas reconstruire l'objet par memcpy.
+{% endif %}
+// =============================================================================
+{% if emit_abi_checks %}
+{% if s.size %}
+static_assert(sizeof({{ s.name }}) == {{ s.size }}u,
+              "ABI divergente pour {{ s.name }} : regenerer avec BuffyPyGen.");
+{% endif %}
+{% for c in s.abi_checks %}
+static_assert(offsetof({{ s.name }}, {{ c.member }}) == {{ c.offset }}u,
+              "Offset de {{ s.name }}::{{ c.member }} divergent.");
+{% endfor %}
+{% endif %}
+
+inline void {{ s.func }}(const std::uint8_t* base)
+{
+    if (base == nullptr) {
+        ImGui::TextDisabled("{{ s.name }} : source indisponible");
+        return;
+    }
+    if (ImGui::TreeNodeEx("{{ s.name }}", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextDisabled("sizeof=%d  alignof=%d  padding=%d", {{ s.size or 0 }}, {{ s.align or 0 }}, {{ s.padding or 0 }});
+{% for f in s.fields %}
+{{ emit_field(f, 8, 'base', 1) }}
+{% endfor %}
+        ImGui::TreePop();
+    }
+}
+
+inline void {{ s.func }}(const {{ s.name }}& obj)
+{
+    {{ s.func }}(reinterpret_cast<const std::uint8_t*>(&obj));
+}
+
+{% endfor %}
+}  // namespace {{ namespace }}
