@@ -23,6 +23,16 @@ Pour le fonctionnement de l'environnement Python lui-même, voir
 
 ## 1. Installation et premier lancement
 
+Sous Windows, le plus simple est de double-cliquer `scry_console.bat`. Au
+premier lancement il crée `.venv`, installe les dépendances et copie
+`scry.ini.example`. Aux lancements suivants il se contente d'activer le venv :
+pip n'est relancé que si `pyproject.toml` a changé. La console reste ouverte ;
+`aide` y liste les commandes, `tests` lance les tests. `scry_tests.bat` fait la
+même préparation, lance pytest et laisse lui aussi la console ouverte. Le
+détail du déploiement est en commentaire en tête des deux scripts.
+
+L'équivalent manuel :
+
 ```
 python -m venv .venv
 .venv\Scripts\activate
@@ -102,6 +112,8 @@ namespaces, et la comparaison d'ABI entre deux versions d'un header.
 ```
 pyproject.toml              métadonnées, dépendances, point d'entrée
 scry.ini.example            modèle de paramétrage, à copier en scry.ini
+scry_console.bat            console prête à l'emploi, déploie le venv au besoin
+scry_tests.bat              même préparation, puis pytest
 scry.ini                    paramétrage local, non versionné
 README.md
 DEVELOPPEMENT.md            environnement Python, packaging, publication
