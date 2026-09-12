@@ -1,0 +1,53 @@
+{#- Assertions ABI generees par Scry.
+
+     Aucun code, aucune dependance : ce header peut etre inclus tel quel dans
+     le build de l'application cible. Il confronte le layout calcule par
+     castxml (clang, regles MSVC) a celui du compilateur reel, configuration
+     par configuration.
+-#}
+// =============================================================================
+//  Fichier genere par Scry. Ne pas editer a la main.
+//  Sources     : {{ source_headers | join(", ") }}
+//  Modele      : castxml + pygccxml, cible {{ compiler }} {{ arch }}, {{ std }}
+//  Macros cl   : {{ cl_flags or "aucune option, build release" }}
+//
+//  A inclure dans CHAQUE configuration de build de l'application cible. S'il
+//  ne compile pas, le layout vu par castxml differe de celui de cette
+//  configuration, et tout acces par offset y lirait n'importe quoi. Regler
+//  alors [castxml] cl_flags et defines de scry.ini, puis regenerer.
+//  'scry verify' fait cette verification pour plusieurs profils d'un coup.
+//
+//  Changent le layout : les macros (_ITERATOR_DEBUG_LEVEL via /MDd, defines
+//  du projet), /Zp et #pragma pack, l'architecture.
+//  Ne le changent pas : l'optimisation (/O2, /Od), /GS, /RTC.
+// =============================================================================
+#pragma once
+
+#include <cstddef>
+
+{% for h in source_headers %}
+#include "{{ h }}"
+{% endfor %}
+
+namespace {{ namespace }} {
+namespace abi {
+
+{% for s in structs %}
+// {{ s.name }}
+using {{ s.alias }} = {{ s.name }};
+{% if s.size %}
+static_assert(sizeof({{ s.alias }}) == {{ s.size }}u,
+              "Scry : sizeof({{ s.name }}) differe de castxml ({{ s.size }}).");
+{% endif %}
+{% if s.align %}
+static_assert(alignof({{ s.alias }}) == {{ s.align }}u,
+              "Scry : alignof({{ s.name }}) differe de castxml ({{ s.align }}).");
+{% endif %}
+{% for c in s.abi_checks %}
+static_assert(offsetof({{ s.alias }}, {{ c.member }}) == {{ c.offset }}u,
+              "Scry : offsetof({{ s.name }}, {{ c.member }}) differe de castxml ({{ c.offset }}).");
+{% endfor %}
+
+{% endfor %}
+}  // namespace abi
+}  // namespace {{ namespace }}

@@ -47,12 +47,24 @@ def test_offsetof_passe_par_un_alias_sans_virgule():
     s = model.Struct(name="ns::Ring<ns::T, 8>", size=16, align=8, header="r.h")
     s.fields = [model.Field(name="head", type_name="int", kind=model.FUNDAMENTAL,
                             offset=8, abs_offset=8, size=4)]
-    text = generator.render([s], _cfg())
+    text = generator.render([s], _cfg(), "abi_checks.h.j2")
     alias = generator.struct_context(s, _cfg())["alias"]
     assert "," not in alias
     assert "using %s = ns::Ring<ns::T, 8>;" % alias in text
     assert "offsetof(%s, head)" % alias in text
-    assert "offsetof(ns::Ring" not in text
+    assert "alignof(%s) == 8u" % alias in text
+    # Le nom complet reste dans le message, jamais comme argument de la macro.
+    assert "static_assert(offsetof(ns::Ring" not in text
+
+
+def test_header_abi_sans_imgui_et_inclus_par_le_header_imgui():
+    s = model.Struct(name="A", size=4, align=4, header="Data/a.h")
+    abi = generator.render([s], _cfg(), "abi_checks.h.j2")
+    assert "imgui" not in abi.lower().replace("imgui ni code", "")
+    assert '#include "a.h"' in abi
+    ui = generator.render([s], _cfg())
+    assert '#include "%s"' % _cfg().abi_header in ui
+    assert "static_assert" not in ui
 
 
 # -- standard transmis a cl --------------------------------------------------
@@ -63,9 +75,15 @@ def test_cl_std_flag():
     assert msvc_env._cl_std_flag("c++23") == "/std:c++latest"
 
 
-def test_cl_with_std_donne_la_syntaxe_castxml_une_fois_entre_guillemets():
+def test_cl_command_donne_la_syntaxe_castxml_une_fois_entre_guillemets():
     # pygccxml ecrit --castxml-cc-msvc "<compiler_path>" : le resultat final
     # doit etre la forme ( cc options ) de castxml.
     cl = Path("C:/Program Files/VS/cl.exe")
-    quoted = '"%s"' % msvc_env._cl_with_std(cl, "c++17")
+    quoted = '"%s"' % msvc_env._cl_command(cl, "c++17")
     assert quoted == '"(" "%s" /std:c++17 ")"' % cl
+
+
+def test_cl_command_transmet_cl_flags():
+    cl = Path("C:/VS/cl.exe")
+    quoted = '"%s"' % msvc_env._cl_command(cl, "c++17", "  /MDd /D_DEBUG ")
+    assert quoted == '"(" "%s" /std:c++17 /MDd /D_DEBUG ")"' % cl

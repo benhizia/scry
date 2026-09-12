@@ -133,6 +133,7 @@ echo   scry dump -H Data\x.h       autre header, -H cumulable, glob accepte
 echo   scry gen                    ecrit Generated\introspection.generated.h
 echo   scry json modele.json       exporte le modele brut
 echo   scry ui                     visualiseur ImGui
+echo   scry verify                 compile les assertions ABI avec cl, release et debug
 echo   scry --help                 toutes les options
 echo.
 echo   tests                       lance les tests, arguments pour pytest

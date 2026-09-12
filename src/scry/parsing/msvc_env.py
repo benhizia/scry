@@ -21,7 +21,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from scry.config import Config, load_config
 
@@ -89,21 +89,31 @@ def find_cl(vs_root: Path, toolset: str, host: str = "Hostx64", arch: str = "x64
     return cl
 
 
-def find_castxml(cfg: Config) -> Path:
+ENV_CASTXML = "SCRY_PATHS_CASTXML"
+
+
+def locate_castxml(cfg: Config) -> Tuple[Path, str]:
+    """Chemin de castxml et origine de ce chemin, pour le diagnostic.
+
+    Ordre : variable SCRY_PATHS_CASTXML, puis [paths] castxml de scry.ini,
+    puis recherche dans le PATH quand la cle est vide.
+    """
     configured = cfg.castxml_path
     if configured:
+        origin = ("variable %s" % ENV_CASTXML if os.environ.get(ENV_CASTXML)
+                  else "scry.ini, [paths] castxml")
         p = Path(configured)
         if p.is_dir():
             p = p / "castxml.exe"
         if p.is_file():
-            return p
-        raise MsvcNotFound("[paths] castxml pointe sur un fichier inexistant : %s" % p)
+            return p, origin
+        raise MsvcNotFound("castxml pointe sur un fichier inexistant (%s) : %s" % (origin, p))
 
     from pygccxml import utils
     try:
         path, _name = utils.find_xml_generator()
         if path:
-            return Path(path)
+            return Path(path), "trouve dans le PATH, [paths] castxml vide"
     except Exception:
         pass
 
@@ -111,6 +121,10 @@ def find_castxml(cfg: Config) -> Path:
         "castxml.exe introuvable. Renseigne [paths] castxml dans scry.ini "
         "ou ajoute castxml au PATH."
     )
+
+
+def find_castxml(cfg: Config) -> Path:
+    return locate_castxml(cfg)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -157,13 +171,17 @@ def _cl_std_flag(std: str) -> str:
     return "/std:c++latest"
 
 
-def _cl_with_std(cl: Path, std: str) -> str:
-    """compiler_path qui fait tourner cl dans le bon standard.
+def _cl_command(cl: Path, std: str, extra_flags: str = "") -> str:
+    """compiler_path qui fait tourner cl dans la configuration de la cible.
 
     En mode MSVC, castxml interroge cl pour recuperer ses macros predefinies,
     dont _MSVC_LANG. Sans option, cl est en C++14 : _MSVC_LANG vaut 201402L,
     et la STL MSVC masque alors <optional>, <variant>, std::string_view...
     Le -std= passe a clang n'y change rien, c'est _MSVC_LANG qui fait foi.
+
+    extra_flags ([castxml] cl_flags) suit la meme logique : /MDd donne _DEBUG
+    et _ITERATOR_DEBUG_LEVEL=2, ce qui grossit vector, string et map. Le
+    layout calcule par clang depend de ces macros, pas de l'optimisation.
 
     castxml accepte '( cc options... )' a la place du seul compilateur, mais
     pygccxml ecrit sous Windows --castxml-cc-msvc "<compiler_path>" sans
@@ -174,7 +192,8 @@ def _cl_with_std(cl: Path, std: str) -> str:
 
     C'est la syntaxe que pygccxml emploie lui-meme sous Linux.
     """
-    return '(" "%s" %s ")' % (cl, _cl_std_flag(std))
+    options = " ".join(x for x in (_cl_std_flag(std), extra_flags.strip()) if x)
+    return '(" "%s" %s ")' % (cl, options)
 
 
 def build_castxml_config(cfg: Optional[Config] = None, **overrides):
@@ -194,7 +213,7 @@ def build_castxml_config(cfg: Optional[Config] = None, **overrides):
         xml_generator="castxml",
         xml_generator_path=str(castxml),
         compiler="msvc",
-        compiler_path=_cl_with_std(cl, cfg.std),
+        compiler_path=_cl_command(cl, cfg.std, cfg.cl_flags),
         cflags="-std=%s" % cfg.std,
     )
     config.update(overrides)
@@ -228,8 +247,8 @@ def main(cfg=None) -> int:
     print("cl.exe        : %s" % cl)
 
     try:
-        castxml = find_castxml(cfg)
-        print("castxml       : %s" % castxml)
+        castxml, origin = locate_castxml(cfg)
+        print("castxml       : %s  (%s)" % (castxml, origin))
         changed = apply_vcvars(vs_root, cfg.arch, cfg.toolset)
     except MsvcNotFound as exc:
         print("[erreur] %s" % exc)

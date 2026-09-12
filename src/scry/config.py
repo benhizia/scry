@@ -160,6 +160,11 @@ class Config(object):
         return self.get("castxml", "std", "c++17")
 
     @property
+    def cl_flags(self) -> str:
+        """Options passees a cl quand castxml l'interroge sur ses macros."""
+        return self.get("castxml", "cl_flags", "")
+
+    @property
     def include_paths(self) -> List[str]:
         out = []
         for raw in self.get_list("castxml", "include_paths"):
@@ -203,6 +208,10 @@ class Config(object):
     def output_header(self) -> str:
         return self.get("codegen", "output_header", "introspection.generated.h")
 
+    @property
+    def abi_header(self) -> str:
+        return self.get("codegen", "abi_header", "abi_checks.generated.h")
+
     def describe(self) -> str:
         lines = [
             "config      : %s" % (self.source if self.found
@@ -210,7 +219,9 @@ class Config(object):
             "racine      : %s" % self.root,
             "header      : %s" % (self.header or "non renseigne"),
             "compilateur : %s (%s/%s, %s)" % (self.compiler, self.host, self.arch, self.std),
-            "castxml     : %s" % (self.castxml_path or "auto"),
+            "cl_flags    : %s" % (self.cl_flags or "aucune, macros d'un build release"),
+            "castxml     : %s" % (self.castxml_path
+                                  or "non renseigne, recherche dans le PATH"),
         ]
         if not self.found:
             lines.append("")

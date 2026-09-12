@@ -54,6 +54,7 @@ PIEGES PYGCCXML, chacun rencontre pour de vrai
 
 import fnmatch
 import glob
+import hashlib
 import os
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -274,13 +275,26 @@ class Introspector(object):
         return [self.build_struct(cls) for cls in self._root_classes(global_ns, full)]
 
     def _open_cache(self):
+        """Cache pygccxml, un fichier par configuration de compilateur.
+
+        La signature de cache de pygccxml ignore compiler_path, or c'est par
+        lui que passent /std: et [castxml] cl_flags, et elle ignore INCLUDE,
+        qui porte la STL du toolset. Sans ce suffixe, passer cl_flags a /MDd
+        resservirait le layout release en cache, sans aucun signal.
+        """
         cache_file = self.cfg.cache_file
         if not cache_file:
             return None
-        directory = os.path.dirname(str(cache_file))
+        key = "|".join((
+            str(getattr(self.xml_config(), "compiler_path", "") or ""),
+            os.environ.get("INCLUDE", ""),
+        ))
+        base, ext = os.path.splitext(str(cache_file))
+        path = "%s.%s%s" % (base, hashlib.sha1(key.encode("utf-8")).hexdigest()[:10], ext)
+        directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        return parser.file_cache_t(str(cache_file))
+        return parser.file_cache_t(path)
 
     def _read_declarations(self, full: str, cache=None):
         """Lit un header sans passer par project_reader_t.

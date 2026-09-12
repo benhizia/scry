@@ -115,6 +115,8 @@ def build_context(structs: List[model.Struct], cfg: Optional[Config] = None,
     return {
         "namespace": cfg.cpp_namespace,
         "source_headers": source_headers(structs, cfg, header),
+        "abi_header": cfg.abi_header,
+        "cl_flags": cfg.cl_flags,
         "emit_abi_checks": cfg.emit_abi_checks,
         "compiler": cfg.compiler,
         "arch": cfg.arch,
@@ -147,17 +149,35 @@ def render(structs: List[model.Struct], cfg: Optional[Config] = None,
     return template.render(**build_context(structs, cfg, header))
 
 
-def generate(structs: List[model.Struct], cfg: Optional[Config] = None,
-             header: Optional[str] = None) -> str:
-    """Rend le template et ecrit le fichier. Retourne le chemin ecrit."""
-    cfg = cfg or load_config()
-    text = render(structs, cfg, header=header)
+def _write(cfg: Config, name: str, text: str) -> str:
     out_dir = cfg.output_dir
     os.makedirs(str(out_dir), exist_ok=True)
-    out_path = os.path.join(str(out_dir), cfg.output_header)
+    out_path = os.path.join(str(out_dir), name)
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
     return out_path
+
+
+def generate_abi(structs: List[model.Struct], cfg: Optional[Config] = None,
+                 header=None) -> str:
+    """Ecrit le header d'assertions ABI seul. Retourne son chemin.
+
+    Sans ImGui ni code : c'est le fichier a inclure dans le build de
+    l'application cible, et celui que compile 'scry verify'.
+    """
+    cfg = cfg or load_config()
+    return _write(cfg, cfg.abi_header,
+                  render(structs, cfg, "abi_checks.h.j2", header=header))
+
+
+def generate(structs: List[model.Struct], cfg: Optional[Config] = None,
+             header=None) -> str:
+    """Ecrit le header ImGui et, si emit_abi_checks, le header ABI qu'il
+    inclut. Retourne le chemin du header ImGui."""
+    cfg = cfg or load_config()
+    if cfg.emit_abi_checks:
+        generate_abi(structs, cfg, header=header)
+    return _write(cfg, cfg.output_header, render(structs, cfg, header=header))
 
 
 def dump_json(structs: List[model.Struct], path: str) -> str:

@@ -8,6 +8,7 @@ brancher Scry dans un build ou une CI.
     scry gen                         ecrit le header C++ d'introspection
     scry json modele.json            exporte le modele brut
     scry ui                          visualiseur ImGui
+    scry verify                      compile les assertions ABI avec cl, par profil
 
 Selection des headers, cumulables et acceptant les motifs glob :
 
@@ -19,6 +20,7 @@ Sans -H, ce sont [paths] headers puis, a defaut, [paths] header qui servent.
 """
 
 import argparse
+import os
 import sys
 
 from scry.config import load_config
@@ -50,8 +52,13 @@ def cmd_check(args, cfg):
     if cfg.compiler == "msvc":
         from scry.parsing import msvc_env
         return msvc_env.main(cfg)
-    from pygccxml import utils
-    print("castxml : %s" % (utils.find_xml_generator(),))
+    from scry.parsing.msvc_env import MsvcNotFound, locate_castxml
+    try:
+        castxml, origin = locate_castxml(cfg)
+    except MsvcNotFound as exc:
+        print("[erreur] %s" % exc)
+        return 1
+    print("castxml : %s  (%s)" % (castxml, origin))
     return 0
 
 
@@ -84,6 +91,8 @@ def cmd_gen(args, cfg):
     structs = introspector.parse(args.header)
     path = codegen.generate(structs, cfg, header=args.header)
     print("Ecrit : %s  (%d structures)" % (path, len(structs)))
+    if cfg.emit_abi_checks:
+        print("Ecrit : %s" % os.path.join(str(cfg.output_dir), cfg.abi_header))
     _print_report(introspector, args.verbose)
     return 1 if introspector.report.conflicts else 0
 
@@ -95,6 +104,50 @@ def cmd_json(args, cfg):
     print("Ecrit : %s" % codegen.dump_json(structs, args.out))
     _print_report(introspector, args.verbose)
     return 1 if introspector.report.conflicts else 0
+
+
+def cmd_verify(args, cfg):
+    """Compile les assertions ABI avec cl, pour chaque profil de build."""
+    if cfg.compiler != "msvc":
+        print("[erreur] scry verify ne sait compiler qu'avec MSVC (compiler = %s)."
+              % cfg.compiler, file=sys.stderr)
+        return 1
+    from scry import verify
+
+    profiles = verify.load_profiles(cfg)
+    if args.profile:
+        wanted = set(args.profile)
+        profiles = [p for p in profiles if p[0] in wanted]
+        if not profiles:
+            print("[erreur] aucun profil nomme %s dans [verify] profiles."
+                  % ", ".join(sorted(wanted)), file=sys.stderr)
+            return 1
+
+    introspector = Introspector(cfg)
+    structs = introspector.parse(args.header)
+    abi_path, results = verify.run(structs, cfg, profiles, header=args.header)
+
+    print("Modele castxml : cl_flags = %s" % (cfg.cl_flags or "aucune, build release"))
+    print("Header ABI     : %s  (%d structures)" % (abi_path, len(structs)))
+    print()
+    for r in results:
+        print("[%-5s] %-10s %s" % ("OK" if r.ok else "ECHEC", r.name, r.flags))
+        shown = r.errors if args.verbose else r.errors[:10]
+        for line in shown:
+            print("          %s" % line)
+        if len(shown) < len(r.errors):
+            print("          ... %d autre(s), -v pour tout voir"
+                  % (len(r.errors) - len(shown)))
+        if not r.ok and not r.errors:
+            print(r.output)
+
+    _print_report(introspector, args.verbose)
+    failed = [r.name for r in results if not r.ok]
+    if failed:
+        print()
+        print("Le modele ne correspond pas aux profils : %s. Regler [castxml] "
+              "cl_flags et defines sur la configuration visee." % ", ".join(failed))
+    return 1 if failed or introspector.report.conflicts else 0
 
 
 def cmd_ui(args, cfg):
@@ -142,6 +195,10 @@ def main(argv=None):
     p_json = sub.add_parser("json", parents=[common], help="exporte le modele en JSON")
     p_json.add_argument("out", nargs="?", default="modele.json")
     sub.add_parser("ui", parents=[common], help="visualiseur ImGui")
+    p_verify = sub.add_parser("verify", parents=[common],
+                              help="compile les assertions ABI avec cl, par profil")
+    p_verify.add_argument("-p", "--profile", action="append", metavar="NOM",
+                          help="ne verifier que ce profil, cumulable")
 
     args = ap.parse_args(argv)
     args.header = getattr(args, "header", None)
@@ -151,7 +208,7 @@ def main(argv=None):
     cfg = load_config(args.config) if args.config else load_config()
 
     handlers = {"check": cmd_check, "dump": cmd_dump, "gen": cmd_gen,
-                "json": cmd_json, "ui": cmd_ui}
+                "json": cmd_json, "ui": cmd_ui, "verify": cmd_verify}
     handler = handlers.get(args.cmd)
     if handler is None:
         ap.print_help()

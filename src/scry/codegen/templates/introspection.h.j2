@@ -20,6 +20,11 @@
 {% for h in source_headers %}
 #include "{{ h }}"
 {% endfor %}
+{% if emit_abi_checks %}
+// Assertions sizeof / alignof / offsetof : si ce header compile, les offsets
+// utilises ci-dessous sont ceux de cette configuration de build.
+#include "{{ abi_header }}"
+{% endif %}
 
 namespace {{ namespace }} {
 
@@ -115,18 +120,6 @@ inline std::uint64_t read_bits(const std::uint8_t* base, std::size_t offset,
 // offsets ci-dessous en tiennent compte. Ne pas reconstruire l'objet par memcpy.
 {% endif %}
 // =============================================================================
-{% if emit_abi_checks %}
-using {{ s.alias }} = {{ s.name }};
-{% if s.size %}
-static_assert(sizeof({{ s.alias }}) == {{ s.size }}u,
-              "ABI divergente pour {{ s.name }} : regenerer avec Scry.");
-{% endif %}
-{% for c in s.abi_checks %}
-static_assert(offsetof({{ s.alias }}, {{ c.member }}) == {{ c.offset }}u,
-              "Offset de {{ s.name }}::{{ c.member }} divergent.");
-{% endfor %}
-{% endif %}
-
 inline void {{ s.func }}(const std::uint8_t* base)
 {
     if (base == nullptr) {

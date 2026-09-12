@@ -64,9 +64,10 @@ machine sans OpenGL.
 ```
 scry check               vérifie Visual Studio, castxml, vcvars
 scry dump                affiche l'arbre avec offsets et tailles
-scry gen                 écrit generated/introspection.generated.h
+scry gen                 écrit Generated/introspection.generated.h et abi_checks.generated.h
 scry json modele.json    exporte le modèle brut
 scry ui                  visualiseur ImGui
+scry verify              compile les assertions ABI avec cl, pour chaque profil de build
 ```
 
 Options communes : `-H / --header` cible un autre header, `-c / --config` un
@@ -288,15 +289,45 @@ mettre castxml à jour, ou épingler un toolset MSVC plus ancien via
 
 ## 7. Ce que génère le template, et pourquoi
 
-**Des `static_assert` sur `sizeof` et `offsetof`.** Le modèle vient de castxml,
-le binaire vient du compilateur cible. Si les deux ABI divergent, packing,
-architecture ou version de toolset, la compilation casse au lieu de produire un
-visualiseur qui lit à côté. C'est le point le plus important du projet : sans
-ces assertions, un visualiseur mémoire se trompe silencieusement, et le
-diagnostic coûte des heures.
+`scry gen` écrit deux headers dans `Generated/`.
+
+**`abi_checks.generated.h` : des `static_assert` sur `sizeof`, `alignof` et
+`offsetof`.** Il n'a aucune dépendance et ne contient aucun code : il est fait
+pour être inclus dans le build de l'application cible, dans chaque
+configuration. Le modèle vient de castxml, le binaire vient du compilateur
+cible ; si les deux divergent, la compilation casse au lieu de produire un
+visualiseur qui lit à côté. Sans ces assertions, un visualiseur mémoire se
+trompe silencieusement, et le diagnostic coûte des heures.
 
 `offsetof` n'est fiable que sur les membres de premier niveau, non statiques et
 hors champs de bits. Les assertions ne sont émises que pour ceux-là.
+
+### Qui calcule le layout, et ce qui le fait varier
+
+Les offsets ne viennent pas de `cl.exe` mais de clang, dans castxml : son
+`MicrosoftRecordLayoutBuilder` réimplémente les règles MSVC, bizarreries
+comprises, parce que clang-cl doit être compatible binaire avec MSVC. `cl`
+n'intervient que pour fournir ses macros prédéfinies et ses chemins d'include.
+Ce sont des constantes de compilation : le runtime n'apporterait rien de plus
+juste.
+
+Le layout dépend donc de ce que voit le préprocesseur, pas de l'optimisation :
+
+| Facteur | Effet |
+|---|---|
+| `/O2`, `/Od`, `/GS`, `/RTC`, garde du tas debug | aucun sur `sizeof` et `offsetof` |
+| `/MDd`, donc `_ITERATOR_DEBUG_LEVEL=2` | `vector` 24 → 32, `string` 32 → 40, `map` 16 → 24 |
+| `#pragma pack` dans le header parsé | pris en compte, clang le lit |
+| `/Zp`, `pack` non refermé par un header inclus avant | invisible pour castxml |
+| macros du projet qui conditionnent des membres | à reporter dans `[castxml] defines` |
+| architecture | `[castxml] arch` |
+
+`[castxml] cl_flags` transmet à `cl` les options de la configuration visée,
+`/MDd` par exemple, pour que castxml voie les mêmes macros. `scry verify`
+compile ensuite `abi_checks.generated.h` avec le vrai `cl`, pour chaque profil
+de `[verify] profiles`, et dit pour quelles configurations le modèle tient.
+
+**`introspection.generated.h` : le rendu ImGui.** Il inclut le header ABI.
 
 **Des fonctions de rendu qui lisent par offset depuis un `const uint8_t*`.**
 Elles ne nomment jamais le type réel, donc elles fonctionnent indifféremment sur

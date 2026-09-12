@@ -5,17 +5,27 @@
 ; scry.ini reel n'est pas versionne : il contient des chemins propres au poste,
 ; qui casseraient chez tout autre utilisateur.
 ; Les chemins relatifs sont resolus depuis le dossier de ce fichier.
-; Toute valeur peut etre surchargee par une variable d'environnement SCRY_<SECTION>_<CLE>,
-; par exemple SCRY_CASTXML_TOOLSET=14.38
+; Toute valeur peut etre surchargee par une variable d'environnement
+; SCRY_<SECTION>_<CLE>, par exemple SCRY_CASTXML_TOOLSET=14.38
 ; ---------------------------------------------------------------------------
 
 [paths]
 ; Laisser vide pour laisser pygccxml chercher castxml dans le PATH.
 castxml =
-; Header parse au demarrage.
-header = Data/test_structs_simple.h
+
+; Headers parses, separes par des ;  Les motifs glob sont acceptes, ** inclus.
+; Chaque header est parse separement puis les modeles sont fusionnes.
+;   headers = Data/moteur.h;Data/telemetrie.h
+;   headers = Include/**/*.h
+headers = Data/test_structs_complexe.h
+
+; Ancienne cle, header unique. Conservee pour compatibilite, ignoree si
+; 'headers' est renseigne.
+header =
+
 output = Generated
 ; Cache pygccxml : evite de relancer castxml quand le header n'a pas change.
+; Il devient rentable des que les headers tirent la STL.
 cache = .scry_cache/parse_cache.dat
 
 [castxml]
@@ -28,12 +38,28 @@ toolset =
 host = Hostx64
 arch = x64
 std = c++17
-; Repertoires d'include supplementaires, separes par des ;
+
+; Options passees a cl quand castxml l'interroge sur ses macros predefinies.
+; Le layout est calcule par clang, mais d'apres ces macros : reprendre celles
+; de la configuration de build de l'appli cible. Vide = build release.
+;   /MDd   runtime debug : _DEBUG et _ITERATOR_DEBUG_LEVEL=2, qui grossissent
+;          vector (24 -> 32), string (32 -> 40), map (16 -> 24).
+; L'optimisation (/O2, /Od), /GS et /RTC ne changent pas le layout.
+; /Zp n'a pas d'effet ici puisqu'il ne definit aucune macro : c'est clang qui
+; calcule le layout. 'scry verify' dit si le modele tient pour chaque profil.
+cl_flags =
+
+; Repertoires d'include, separes par des ;  Ce sont de simples -I : ils rendent
+; des headers trouvables, ils n'en font pas des points d'entree. Pour parser un
+; header, il faut le lister dans [paths] headers.
 include_paths =
 ; Macros, separees par des ;  ex : WIN32_LEAN_AND_MEAN;NOMINMAX
+; Reprendre celles du projet cible qui conditionnent des membres.
 defines =
 ; Options brutes passees a castxml, separees par des espaces.
-extra_cflags =
+; -Wno-pragma-once-outside-header supprime la warning emise sur chaque header
+; parse comme fichier principal.
+extra_cflags = -Wno-pragma-once-outside-header
 
 [introspection]
 ; Profondeur maximale de descente dans les types imbriques.
@@ -46,9 +72,28 @@ include_non_public = false
 ; Inclure les membres statiques. Ils n'ont pas d'offset utilisable.
 include_static = false
 
+; Motifs de fichiers dont les types sont retenus comme racines, en plus des
+; headers explicitement parses. Sert a remonter les types definis dans un
+; header commun atteint via les repertoires d'include, sans pour autant
+; remonter toute la STL. Separes par des ;
+;   root_globs = Common/*.h;Include/moteur/**/*.h
+root_globs =
+
+; S'arreter au premier header en echec. A false, les echecs sont collectes et
+; le parsing continue, ce qui est preferable sur un gros lot de headers.
+stop_on_error = false
+
 [codegen]
 namespace = scry
-; Emettre les static_assert sur sizeof et offsetof dans le code genere.
+; Emettre le header d'assertions ABI (sizeof, alignof, offsetof).
 emit_abi_checks = true
-; Nom du header genere dans [paths].output
+; Noms des headers generes dans [paths] output. Le header ABI ne depend de
+; rien : c'est lui qu'il faut inclure dans le build de l'appli cible.
 output_header = introspection.generated.h
+abi_header = abi_checks.generated.h
+
+[verify]
+; Profils de build contre lesquels 'scry verify' compile les assertions ABI,
+; separes par des ;  Format 'nom: options de cl'. Reprendre les options de la
+; cible qui touchent au layout : runtime (/MD, /MDd), /Zp, macros /D.
+profiles = release: /MD; debug: /MDd
