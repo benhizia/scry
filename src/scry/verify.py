@@ -98,11 +98,7 @@ def compile_command(cl: str, cfg: Config, flags: str, dirs: Sequence[str],
 
 
 def _find_cl(cfg: Config) -> str:
-    vs_root = msvc_env.find_vs_root()
-    toolset = msvc_env.find_toolset(vs_root, cfg.toolset)
-    cl = msvc_env.find_cl(vs_root, toolset, cfg.host, cfg.arch)
-    msvc_env.apply_vcvars(vs_root, cfg.arch, cfg.toolset)
-    return str(cl)
+    return str(msvc_env.prepare_cl(cfg))
 
 
 def run(structs: Sequence[model.Struct], cfg: Config,

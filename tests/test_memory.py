@@ -54,7 +54,10 @@ def test_decode_double():
 
 
 def test_decode_bool():
-    assert memory.decode(src(b"\x01"), field("b", 0, 1, type_name="bool")) == "True"
+    assert memory.decode(src(b"\x01"), field("b", 0, 1, type_name="bool")) == "true"
+    # Typedef de <cstdint> tel que le rend pygccxml.
+    assert memory.decode(src(b"\x2a" + b"\x00" * 7),
+                         field("t", 0, 8, type_name="::uint64_t")) == "42"
 
 
 def test_decode_respecte_l_offset():

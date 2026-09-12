@@ -9,6 +9,7 @@ brancher Scry dans un build ou une CI.
     scry json modele.json            exporte le modele brut
     scry ui                          visualiseur ImGui
     scry verify                      compile les assertions ABI avec cl, par profil
+    scry viewer --run                compile et lance le visualiseur C++ natif
 
 Selection des headers, cumulables et acceptant les motifs glob :
 
@@ -150,6 +151,29 @@ def cmd_verify(args, cfg):
     return 1 if failed or introspector.report.conflicts else 0
 
 
+def cmd_viewer(args, cfg):
+    """Compile le visualiseur C++ natif a partir du header genere."""
+    if cfg.compiler != "msvc":
+        print("[erreur] scry viewer ne sait compiler qu'avec MSVC (compiler = %s)."
+              % cfg.compiler, file=sys.stderr)
+        return 1
+    from scry.viewer import build as viewer_build
+
+    introspector = Introspector(cfg)
+    structs = introspector.parse(args.header)
+    try:
+        exe = viewer_build.build(structs, cfg, header=args.header)
+    except viewer_build.ViewerError as exc:
+        print("[erreur] %s" % exc, file=sys.stderr)
+        return 1
+    print("Visualiseur : %s  (%d structures)" % (exe, len(structs)))
+    _print_report(introspector, args.verbose)
+    if args.run:
+        viewer_build.launch(exe)
+        print("Lance.")
+    return 0
+
+
 def cmd_ui(args, cfg):
     """Le visualiseur ImGui.
 
@@ -199,6 +223,10 @@ def main(argv=None):
                               help="compile les assertions ABI avec cl, par profil")
     p_verify.add_argument("-p", "--profile", action="append", metavar="NOM",
                           help="ne verifier que ce profil, cumulable")
+    p_viewer = sub.add_parser("viewer", parents=[common],
+                              help="compile le visualiseur C++ natif (ImGui, DirectX 11)")
+    p_viewer.add_argument("--run", action="store_true",
+                          help="lance l'executable apres compilation")
 
     args = ap.parse_args(argv)
     args.header = getattr(args, "header", None)
@@ -208,7 +236,8 @@ def main(argv=None):
     cfg = load_config(args.config) if args.config else load_config()
 
     handlers = {"check": cmd_check, "dump": cmd_dump, "gen": cmd_gen,
-                "json": cmd_json, "ui": cmd_ui, "verify": cmd_verify}
+                "json": cmd_json, "ui": cmd_ui, "verify": cmd_verify,
+                "viewer": cmd_viewer}
     handler = handlers.get(args.cmd)
     if handler is None:
         ap.print_help()

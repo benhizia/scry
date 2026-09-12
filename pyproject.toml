@@ -43,6 +43,8 @@ where = ["src"]
 # seraient absents du wheel et la generation echouerait apres installation.
 [tool.setuptools.package-data]
 "scry.codegen" = ["templates/*.j2"]
+# Source du visualiseur C++ natif, compile par 'scry viewer'.
+"scry.viewer" = ["*.cpp"]
 
 [tool.ruff]
 line-length = 100

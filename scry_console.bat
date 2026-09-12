@@ -137,6 +137,7 @@ echo   scry verify                 compile les assertions ABI avec cl, release e
 echo   scry --help                 toutes les options
 echo.
 echo   tests                       lance les tests, arguments pour pytest
+echo   viewer                      compile et lance le visualiseur C++ natif
 echo   aide                        reaffiche cette liste
 echo   scry_console.bat reinstall  reinstalle les dependances
 echo   exit                        ferme la console
@@ -147,6 +148,7 @@ exit /b 0
 :shell
 doskey aide="%~f0" aide
 doskey tests="%~dp0scry_tests.bat" $*
+doskey viewer="%~dp0scry_viewer.bat" $*
 if defined SCRY_CONSOLE exit /b 0
 set "SCRY_CONSOLE=1"
 cmd /k

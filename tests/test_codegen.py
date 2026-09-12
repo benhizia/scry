@@ -57,6 +57,22 @@ def test_offsetof_passe_par_un_alias_sans_virgule():
     assert "static_assert(offsetof(ns::Ring" not in text
 
 
+def test_rendu_cpp_en_tree_table_avec_padding_et_registre():
+    s = model.Struct(name="P", size=16, align=8, header="p.h", fields=[
+        model.Field(name="a", type_name="int", kind=model.FUNDAMENTAL, offset=0,
+                    abs_offset=0, size=4, access_path="obj.a"),
+        model.Field(name="d", type_name="double", kind=model.FUNDAMENTAL, offset=8,
+                    abs_offset=8, size=8, access_path="obj.d"),
+    ])
+    text = generator.render([s], _cfg())
+    # Memes lignes que l'IHM Python : le trou entre a et d est une ligne.
+    assert '"[padding 4 o]##pad4"' in text
+    assert text.index('"a##0"') < text.index("##pad4") < text.index('"d##8"')
+    assert 'ImGui::Text("%.6g"' in text
+    assert "inline const StructInfo kStructs[]" in text
+    assert "&detail::default_instance<P>" in text
+
+
 def test_header_abi_sans_imgui_et_inclus_par_le_header_imgui():
     s = model.Struct(name="A", size=4, align=4, header="Data/a.h")
     abi = generator.render([s], _cfg(), "abi_checks.h.j2")

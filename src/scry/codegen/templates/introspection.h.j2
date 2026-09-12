@@ -1,9 +1,14 @@
 {#- Template d'introspection ImGui genere par Scry.
 
-     Principe : chaque niveau d'imbrication introduit un pointeur de base local
-     et les offsets sont RELATIFS au parent. C'est ce qui permet de boucler sur
-     un tableau de structures avec un simple stride, la ou des offsets absolus
-     n'auraient decrit que l'element 0.
+     Rendu en tree-table : une seule table, l'arbre dans la premiere colonne,
+     une ligne par membre ou par trou de padding. C'est la meme vue que l'IHM
+     Python, construite a partir des memes lignes (model.layout_items), pour
+     pouvoir comparer les deux ligne a ligne.
+
+     Chaque niveau d'imbrication introduit un pointeur de base local et les
+     offsets de LECTURE sont relatifs au parent : c'est ce qui permet de boucler
+     sur un tableau de structures avec un simple pas. Les offsets AFFICHES sont
+     absolus, comme cote Python.
 -#}
 // =============================================================================
 //  Fichier genere par Scry. Ne pas editer a la main.
@@ -14,7 +19,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <type_traits>
 
 #include "imgui.h"
 {% for h in source_headers %}
@@ -46,69 +53,159 @@ inline const char* read_cstr(const std::uint8_t* base, std::size_t offset)
     return reinterpret_cast<const char*>(base + offset);
 }
 
-inline std::uint64_t read_bits(const std::uint8_t* base, std::size_t offset,
-                               unsigned bit_offset, unsigned bit_width)
+// Entier signe de 'size' octets, little-endian : taille reelle d'une enum,
+// qui n'est pas forcement celle d'un int.
+inline long long read_sint(const std::uint8_t* base, std::size_t offset, std::size_t size)
 {
-    std::uint32_t word = 0;
-    std::memcpy(&word, base + offset, sizeof(word));
-    const std::uint64_t mask = (bit_width >= 64u) ? ~0ull : ((1ull << bit_width) - 1ull);
-    return (static_cast<std::uint64_t>(word) >> bit_offset) & mask;
+    unsigned long long raw = 0;
+    std::memcpy(&raw, base + offset, size < sizeof(raw) ? size : sizeof(raw));
+    if (size > 0 && size < sizeof(raw)) {
+        const unsigned long long sign = 1ull << (size * 8u - 1u);
+        raw = (raw ^ sign) - sign;
+    }
+    return static_cast<long long>(raw);
 }
 
-{% macro emit_field(f, indent, base, level) %}
-{%- set pad = ' ' * indent %}
+// Champ de bits : on lit l'unite de stockage, de 'size' octets, puis on extrait.
+inline unsigned long long read_bits(const std::uint8_t* base, std::size_t offset,
+                                    std::size_t size, unsigned bit_offset, unsigned bit_width)
+{
+    unsigned long long word = 0;
+    std::memcpy(&word, base + offset, size < sizeof(word) ? size : sizeof(word));
+    const unsigned long long mask = (bit_width >= 64u) ? ~0ull : ((1ull << bit_width) - 1ull);
+    return (word >> bit_offset) & mask;
+}
+
+namespace detail {
+
+enum class RowKind { Aggregate, Leaf, Padding };
+
+// Memes couleurs que l'IHM Python (scry.ui.render.KIND_COLORS).
+constexpr ImU32 kColorDefault     = IM_COL32(217, 217, 217, 255);
+constexpr ImU32 kColorFundamental = IM_COL32(191, 217, 255, 255);
+constexpr ImU32 kColorEnum        = IM_COL32(242, 204, 128, 255);
+constexpr ImU32 kColorPointer     = IM_COL32(230, 153, 153, 255);
+constexpr ImU32 kColorArray       = IM_COL32(179, 230, 179, 255);
+constexpr ImU32 kColorUnion       = IM_COL32(242, 179, 242, 255);
+constexpr ImU32 kColorPadding     = IM_COL32(242, 153, 64, 220);
+
+inline bool begin_members_table(const char* id)
+{
+    const ImGuiTableFlags flags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY |
+                                  ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable(id, 5, flags))
+        return false;
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Nom", ImGuiTableColumnFlags_WidthStretch, 3.0f);
+    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+    ImGui::TableSetupColumn("Taille", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+    ImGui::TableSetupColumn("Valeur", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableHeadersRow();
+    return true;
+}
+
+// Ouvre une ligne et remplit Nom, Type, Offset et Taille. La colonne Valeur
+// reste courante pour l'appelant. Retourne true si le noeud est ouvert :
+// l'appelant doit alors appeler ImGui::TreePop().
+inline bool row(const char* label, const char* type, std::size_t abs_offset,
+                std::size_t size, RowKind kind, ImU32 color, bool default_open = false)
+{
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanFullWidth;
+    if (kind == RowKind::Aggregate)
+        flags |= ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick;
+    else
+        flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    if (default_open)
+        flags |= ImGuiTreeNodeFlags_DefaultOpen;
+    ImGui::PushStyleColor(ImGuiCol_Text, color);
+    const bool open = ImGui::TreeNodeEx(label, flags);
+    ImGui::PopStyleColor();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(type);
+    ImGui::TableNextColumn();
+    ImGui::Text("%zu", abs_offset);
+    ImGui::TableNextColumn();
+    if (size != 0)
+        ImGui::Text("%zu o", size);
+    ImGui::TableNextColumn();
+    return open && kind == RowKind::Aggregate;
+}
+
+}  // namespace detail
+
+{% macro emit_item(f, base, level, extra) %}
 {%- set sub = 'b%d' % level %}
-{% if f.is_static %}
-{{ pad }}// {{ f.name }} : membre statique, hors instance.
+{%- set iv = 'i%d' % level %}
+{%- set absx = '%d%s' % (f.abs_offset, extra) %}
+{% if f.kind == 'padding' %}
+detail::row("{{ f.label }}##pad{{ f.abs_offset }}", "", {{ absx }}, {{ f.size }}, detail::RowKind::Padding, detail::kColorPadding);
+{% elif f.is_static %}
+detail::row("{{ f.label | cstr }}", "{{ f.type | cstr }}", 0, 0, detail::RowKind::Leaf, detail::kColorDefault);
+ImGui::TextDisabled("statique, hors instance");
 {% elif f.truncated in ('cycle', 'depth', 'opaque') %}
-{{ pad }}ImGui::TextDisabled("{{ f.label }} : {{ f.type }} [{{ f.truncated }}]");
+detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Leaf, {{ f.color }});
+ImGui::TextDisabled("[{{ f.truncated }}]");
+{% elif f.is_char_array %}
+detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Leaf, {{ f.color }});
+ImGui::Text("\"%.{{ f.array_len or 0 }}s\"", read_cstr({{ base }}, {{ f.offset }}));
 {% elif f.kind == 'array' and f.children %}
 {%- set elem = f.children[0] %}
 {%- set stride = (f.size // f.array_len) if (f.size and f.array_len) else 0 %}
-{{ pad }}if (ImGui::TreeNode("{{ f.label }}")) {
-{{ pad }}    for (int i = 0; i < {{ f.array_len or 0 }}; ++i) {
-{{ pad }}        ImGui::PushID(i);
-{{ pad }}        const std::uint8_t* {{ sub }} = {{ base }} + {{ f.offset }} + i * {{ stride }};
-{{ pad }}        if (ImGui::TreeNode("element", "[%d] @%d", i, {{ f.offset }} + i * {{ stride }})) {
-{% for child in elem.children %}
-{{ emit_field(child, indent + 12, sub, level + 1) }}
+if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Aggregate, {{ f.color }})) {
+    for (int {{ iv }} = 0; {{ iv }} < {{ f.array_len or 0 }}; ++{{ iv }}) {
+        ImGui::PushID({{ iv }});
+        const std::uint8_t* {{ sub }} = {{ base }} + {{ f.offset }} + {{ iv }} * {{ stride }};
+        char label_{{ iv }}[24];
+        std::snprintf(label_{{ iv }}, sizeof(label_{{ iv }}), "[%d]", {{ iv }});
+{% if elem.rows %}
+        if (detail::row(label_{{ iv }}, "{{ elem.type | cstr }}", {{ absx }} + {{ iv }} * {{ stride }}, {{ stride }}, detail::RowKind::Aggregate, {{ elem.color }})) {
+{% for child in elem.rows %}
+{{ emit_item(child, sub, level + 1, extra ~ ' + ' ~ iv ~ ' * ' ~ stride) | indent(12, true) }}
 {% endfor %}
-{{ pad }}            ImGui::TreePop();
-{{ pad }}        }
-{{ pad }}        ImGui::PopID();
-{{ pad }}    }
-{{ pad }}    ImGui::TreePop();
-{{ pad }}}
-{% elif f.is_char_array %}
-{{ pad }}ImGui::Text("{{ f.name }} = \"%.{{ f.array_len }}s\"", read_cstr({{ base }}, {{ f.offset }}));
-{% elif f.kind == 'array' %}
-{%- set stride = (f.size // f.array_len) if (f.size and f.array_len) else 0 %}
-{{ pad }}if (ImGui::TreeNode("{{ f.label }}")) {
-{{ pad }}    for (int i = 0; i < {{ f.array_len or 0 }}; ++i)
-{{ pad }}        ImGui::Text("[%d] @%d  {{ f.elem_type }}", i, {{ f.offset }} + i * {{ stride }});
-{{ pad }}    ImGui::TreePop();
-{{ pad }}}
-{% elif f.children %}
-{{ pad }}if (ImGui::TreeNode("{{ f.label }}")) {
-{{ pad }}    ImGui::TextDisabled("{{ f.type }}  @{{ f.offset }}  {{ f.size }} o");
-{{ pad }}    const std::uint8_t* {{ sub }} = {{ base }} + {{ f.offset }};
-{% for child in f.children %}
-{{ emit_field(child, indent + 4, sub, level + 1) }}
-{% endfor %}
-{{ pad }}    ImGui::TreePop();
-{{ pad }}}
-{% elif f.bit_width %}
-{{ pad }}ImGui::Text("{{ f.name }} : {{ f.bit_width }} = %llu", static_cast<unsigned long long>(
-{{ pad }}    read_bits({{ base }}, {{ f.offset }}, {{ f.bit_offset or 0 }}, {{ f.bit_width }})));
-{% elif f.kind == 'pointer' %}
-{{ pad }}ImGui::Text("{{ f.name }} = 0x%016llX", static_cast<unsigned long long>(
-{{ pad }}    read_at<std::uintptr_t>({{ base }}, {{ f.offset }})));
-{% elif f.kind == 'enum' %}
-{{ pad }}ImGui::Text("{{ f.name }} = %d", read_at<int>({{ base }}, {{ f.offset }}));
-{% elif f.printf_fmt %}
-{{ pad }}ImGui::Text("{{ f.name }} = {{ f.printf_fmt }}", {{ f.printf_expr | replace('{expr}', 'read_at<' ~ f.type ~ '>(' ~ base ~ ', ' ~ f.offset ~ ')') }});
+            ImGui::TreePop();
+        }
 {% else %}
-{{ pad }}ImGui::TextDisabled("{{ f.name }} : {{ f.type }} non gere");
+        detail::row(label_{{ iv }}, "{{ (f.elem_type or elem.type) | cstr }}", {{ absx }} + {{ iv }} * {{ stride }}, {{ stride }}, detail::RowKind::Leaf, {{ elem.color }});
+{% if elem.printf_fmt %}
+        ImGui::Text("{{ elem.printf_fmt }}", {{ elem.printf_expr | replace('{expr}', 'read_at<' ~ elem.type ~ '>(' ~ sub ~ ', 0)') }});
+{% else %}
+        (void){{ sub }};
+{% endif %}
+{% endif %}
+        ImGui::PopID();
+    }
+    ImGui::TreePop();
+}
+{% elif f.rows %}
+if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Aggregate, {{ f.color }})) {
+    const std::uint8_t* {{ sub }} = {{ base }} + {{ f.offset }};
+{% for child in f.rows %}
+{{ emit_item(child, sub, level + 1, extra) | indent(4, true) }}
+{% endfor %}
+    ImGui::TreePop();
+}
+{% else %}
+detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Leaf, {{ f.color }});
+{% if f.bit_width %}
+ImGui::Text("%llu", read_bits({{ base }}, {{ f.offset }}, {{ f.size or 1 }}, {{ f.bit_offset or 0 }}, {{ f.bit_width }}));
+{% elif f.kind == 'pointer' %}
+ImGui::Text("0x%016llX", static_cast<unsigned long long>(read_at<std::uintptr_t>({{ base }}, {{ f.offset }})));
+{% elif f.kind == 'enum' %}
+{
+    static const char* const names[] = { {% for v in f.enum_values %}"{{ v | cstr }}", {% endfor %}nullptr };
+    const long long v = read_sint({{ base }}, {{ f.offset }}, {{ f.size or 4 }});
+    if (v >= 0 && v < {{ f.enum_values | length }})
+        ImGui::Text("%s (%lld)", names[v], v);
+    else
+        ImGui::Text("%lld", v);
+}
+{% elif f.printf_fmt %}
+ImGui::Text("{{ f.printf_fmt }}", {{ f.printf_expr | replace('{expr}', 'read_at<' ~ f.type ~ '>(' ~ base ~ ', ' ~ f.offset ~ ')') }});
+{% endif %}
 {% endif %}
 {%- endmacro %}
 
@@ -120,18 +217,25 @@ inline std::uint64_t read_bits(const std::uint8_t* base, std::size_t offset,
 // offsets ci-dessous en tiennent compte. Ne pas reconstruire l'objet par memcpy.
 {% endif %}
 // =============================================================================
+inline void {{ s.func }}_rows(const std::uint8_t* base)
+{
+{% for f in s.rows %}
+{{ emit_item(f, 'base', 1, '') | indent(4, true) }}
+{% endfor %}
+}
+
 inline void {{ s.func }}(const std::uint8_t* base)
 {
     if (base == nullptr) {
-        ImGui::TextDisabled("{{ s.name }} : source indisponible");
+        ImGui::TextDisabled("{{ s.name | cstr }} : pas d'instance disponible");
         return;
     }
-    if (ImGui::TreeNodeEx("{{ s.name }}", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TextDisabled("sizeof=%d  alignof=%d  padding=%d", {{ s.size or 0 }}, {{ s.align or 0 }}, {{ s.padding or 0 }});
-{% for f in s.fields %}
-{{ emit_field(f, 8, 'base', 1) }}
-{% endfor %}
-        ImGui::TreePop();
+    if (detail::begin_members_table("{{ s.func }}")) {
+        if (detail::row("{{ s.name | cstr }}", "{{ s.kind }}", 0, {{ s.size or 0 }}, detail::RowKind::Aggregate, detail::kColorDefault, true)) {
+            {{ s.func }}_rows(base);
+            ImGui::TreePop();
+        }
+        ImGui::EndTable();
     }
 }
 
@@ -141,4 +245,46 @@ inline void {{ s.func }}(const {{ s.name }}& obj)
 }
 
 {% endfor %}
+{% if structs %}
+// -----------------------------------------------------------------------------
+// Registre : toutes les structures, pour un visualiseur generique.
+// -----------------------------------------------------------------------------
+struct StructInfo
+{
+    const char* name;
+    std::size_t size;
+    std::size_t align;
+    std::size_t padding;
+    bool polymorphic;
+    void (*draw)(const std::uint8_t*);
+    // Instance construite par defaut, initialiseurs de membres compris, ou
+    // nullptr si le type est abstrait ou non constructible par defaut.
+    const std::uint8_t* (*default_instance)();
+};
+
+namespace detail {
+
+template <typename T>
+const std::uint8_t* default_instance()
+{
+    if constexpr (std::is_default_constructible<T>::value && !std::is_abstract<T>::value) {
+        static const T instance{};
+        return reinterpret_cast<const std::uint8_t*>(&instance);
+    } else {
+        return nullptr;
+    }
+}
+
+}  // namespace detail
+
+inline const StructInfo kStructs[] = {
+{% for s in structs %}
+    {"{{ s.name | cstr }}", sizeof({{ s.name }}), alignof({{ s.name }}), {{ s.padding or 0 }}u, {{ 'true' if s.is_polymorphic else 'false' }},
+     static_cast<void (*)(const std::uint8_t*)>(&{{ s.func }}), &detail::default_instance<{{ s.name }}>},
+{% endfor %}
+};
+
+constexpr std::size_t kStructCount = sizeof(kStructs) / sizeof(kStructs[0]);
+{% endif %}
+
 }  // namespace {{ namespace }}

@@ -182,7 +182,17 @@ def test_printf_for_connu_et_inconnu():
 
 
 def test_printf_for_tolere_les_espaces():
-    assert model.printf_for("  double  ")[0] == "%.6f"
+    # %.6g, comme le decodage Python : les deux IHM affichent la meme chaine.
+    assert model.printf_for("  double  ")[0] == "%.6g"
+
+
+def test_canonical_type_ramene_les_alias_standard():
+    assert model.canonical_type("::uint64_t") == "long long unsigned int"
+    assert model.canonical_type("std::int16_t") == "short int"
+    assert model.canonical_type("::size_t", 8) == "long long unsigned int"
+    assert model.canonical_type("::size_t", 4) == "unsigned int"
+    assert model.canonical_type("MaStruct") == "MaStruct"
+    assert model.printf_for("::uint8_t")[0] == "%hhu"
 
 
 def test_printf_for_float_promeut_en_double():

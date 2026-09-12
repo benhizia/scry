@@ -20,6 +20,10 @@ scry.ini
 Generated/
 generated/
 
+# Sources de Dear ImGui, clonees par 'scry viewer' au tag de [viewer] imgui_tag.
+# L'exe et ses objets vont dans build/, deja ignore plus haut.
+third_party/
+
 # Cache pygccxml. Binaire, volumineux, et lie aux chemins absolus du poste.
 .scry_cache/
 .bpg_cache/

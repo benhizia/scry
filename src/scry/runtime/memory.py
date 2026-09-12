@@ -120,13 +120,16 @@ def decode(source: MemorySource, field: model.Field) -> Optional[str]:
         return '"%s"' % text.decode("utf-8", errors="replace")
 
     if field.kind == model.FUNDAMENTAL:
-        fmt = STRUCT_FORMATS.get(field.type_name)
+        fmt = STRUCT_FORMATS.get(model.canonical_type(field.type_name, field.size))
         if fmt is None:
             return None
         raw = source.read(field.abs_offset, struct.calcsize("<" + fmt))
         if raw is None:
             return None
         value = struct.unpack("<" + fmt, raw)[0]
+        # Memes chaines que le C++ genere (model.PRINTF_FORMATS).
+        if isinstance(value, bool):
+            return "true" if value else "false"
         if isinstance(value, bytes):
             return repr(value.decode("latin-1"))
         if isinstance(value, float):

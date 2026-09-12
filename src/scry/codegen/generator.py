@@ -30,7 +30,7 @@ def _cpp_identifier(name: str) -> str:
 
 def field_context(fld: model.Field) -> Dict:
     """Vue plate d'un champ, prete a etre consommee par le template."""
-    fmt = model.printf_for(fld.type_name)
+    fmt = model.printf_for(fld.type_name, fld.size)
     is_char_array = fld.kind == model.ARRAY and fld.elem_type in (
         "char", "signed char", "unsigned char")
 
@@ -54,9 +54,40 @@ def field_context(fld: model.Field) -> Dict:
         "is_char_array": is_char_array,
         "printf_fmt": fmt[0] if fmt else None,
         "printf_expr": fmt[1] if fmt else None,
-        "children": [field_context(c) for c in fld.children],
+        "color": "detail::" + _KIND_COLORS.get(fld.kind, "kColorDefault"),
     }
+    # Lignes du tree-table : membres et trous de padding, dans l'ordre des
+    # offsets, comme dans l'IHM Python.
+    ctx["rows"] = _rows(fld.children, fld.size, fld.abs_offset,
+                        with_holes=model.shows_holes(fld))
+    ctx["children"] = [r for r in ctx["rows"] if r["kind"] != "padding"]
     return ctx
+
+
+_KIND_COLORS = {
+    model.FUNDAMENTAL: "kColorFundamental",
+    model.ENUM: "kColorEnum",
+    model.POINTER: "kColorPointer",
+    model.ARRAY: "kColorArray",
+    model.UNION: "kColorUnion",
+}
+
+
+def _rows(fields, size, base_abs: int, with_holes: bool, vptr: bool = False) -> List[Dict]:
+    out = []
+    for _, fld, hole in model.layout_items(list(fields), size, with_holes):
+        if hole is None:
+            out.append(field_context(fld))
+            continue
+        start, end = hole
+        out.append({
+            "kind": "padding",
+            "label": model.hole_label(start, end, vptr and start == 0),
+            "offset": start,
+            "abs_offset": base_abs + start,
+            "size": end - start,
+        })
+    return out
 
 
 def struct_context(struct_info: model.Struct, cfg: Config) -> Dict:
@@ -81,6 +112,8 @@ def struct_context(struct_info: model.Struct, cfg: Config) -> Dict:
         "is_polymorphic": struct_info.is_polymorphic,
         "abi_checks": checks,
         "fields": [field_context(f) for f in struct_info.fields],
+        "rows": _rows(struct_info.fields, struct_info.size, 0, with_holes=True,
+                      vptr=struct_info.is_polymorphic),
     }
 
 
@@ -145,6 +178,9 @@ def render(structs: List[model.Struct], cfg: Optional[Config] = None,
         lstrip_blocks=True,
         keep_trailing_newline=True,
     )
+    # Chaine litterale C++ : les noms de type ne contiennent normalement ni
+    # guillemet ni antislash, mais un header tiers n'offre aucune garantie.
+    env.filters["cstr"] = lambda s: str(s).replace("\\", "\\\\").replace('"', '\\"')
     template = env.get_template(template_name)
     return template.render(**build_context(structs, cfg, header))
 

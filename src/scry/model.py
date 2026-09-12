@@ -13,7 +13,7 @@ besoin que d'un pointeur de base et de cet offset.
 """
 
 from dataclasses import dataclass, field as dc_field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Natures de champ.
 FUNDAMENTAL = "fundamental"
@@ -111,6 +111,65 @@ class Field:
         return d
 
 
+def padding_spans(fields: List[Field], size: Optional[int]) -> List[Tuple[int, int]]:
+    """Intervalles [debut, fin) non couverts par un membre, relatifs au parent.
+
+    Fusion d'intervalles et non somme des tailles : les unions se recouvrent,
+    et plusieurs champs de bits partagent la meme unite de stockage. Une somme
+    naive donnerait un resultat faux. Le padding de fin, qui arrondit sizeof
+    a un multiple de alignof, est inclus.
+    """
+    if size is None:
+        return []
+    spans = sorted((f.offset, f.offset + f.size) for f in fields
+                   if not f.is_static and f.size is not None)
+    holes = []
+    cursor = 0
+    for start, end in spans:
+        if start > cursor:
+            holes.append((cursor, start))
+        cursor = max(cursor, end)
+    if cursor < size:
+        holes.append((cursor, size))
+    return holes
+
+
+def layout_items(fields: List[Field], size: Optional[int], with_holes: bool = True):
+    """Membres et trous tries par offset relatif.
+
+    Retourne des triplets (offset, field, None) ou (offset, None, (debut, fin)).
+    A offset egal, un trou passe avant le membre, et les membres gardent
+    l'ordre du source : unions et champs de bits restent lisibles. Partage par
+    l'IHM Python et le generateur C++, pour que les deux affichent les memes
+    lignes.
+    """
+    items = [(f.offset, 1, i, f, None) for i, f in enumerate(fields)]
+    if with_holes:
+        items += [(start, 0, i, None, (start, end))
+                  for i, (start, end) in enumerate(padding_spans(fields, size))]
+    items.sort(key=lambda it: it[:3])
+    return [(offset, fld, span) for offset, _, _, fld, span in items]
+
+
+def shows_holes(fld: Field) -> bool:
+    """Un agregat imbrique n'affiche ses trous que s'il a un membre visible.
+
+    std::string, std::map et la plupart des classes n'ont que des membres
+    prives : avec include_non_public = false, ils n'ont aucun enfant, et tout
+    leur contenu serait compte a tort comme du padding.
+    """
+    return fld.kind in AGGREGATES and any(not c.is_static for c in fld.children)
+
+
+def hole_label(start: int, end: int, vptr: bool = False) -> str:
+    """Libelle d'un trou. Sur un type polymorphe, le trou a l'offset 0 est le
+    pointeur de vtable, et le cas echeant les membres des classes de base."""
+    size = end - start
+    if vptr:
+        return "[vptr %d o]" % size if size == 8 else "[vptr et bases %d o]" % size
+    return "[padding %d o]" % size
+
+
 @dataclass
 class Struct:
     """Une structure de premier niveau, racine d'un arbre de Field."""
@@ -137,33 +196,19 @@ class Struct:
             if node.is_leaf and node.is_readable:
                 yield node
 
+    def padding_spans(self) -> List[Tuple[int, int]]:
+        """Trous du premier niveau, voir padding_spans()."""
+        return padding_spans(self.fields, self.size)
+
     def padding_bytes(self) -> Optional[int]:
         """Octets non couverts par un membre, au premier niveau.
 
-        Calcule par fusion d'intervalles et non par somme des tailles : les
-        unions se recouvrent, et plusieurs champs de bits partagent la meme
-        unite de stockage. Une somme naive donnerait un resultat faux.
+        Sur un type polymorphe, le pointeur de vtable en fait partie : il
+        n'est pas un membre declare.
         """
         if self.size is None:
             return None
-        spans = []
-        for f in self.fields:
-            if f.is_static or f.size is None:
-                continue
-            spans.append((f.offset, f.offset + f.size))
-        if not spans:
-            return self.size
-        spans.sort()
-        covered = 0
-        cur_start, cur_end = spans[0]
-        for start, end in spans[1:]:
-            if start > cur_end:
-                covered += cur_end - cur_start
-                cur_start, cur_end = start, end
-            else:
-                cur_end = max(cur_end, end)
-        covered += cur_end - cur_start
-        return self.size - covered
+        return sum(end - start for start, end in self.padding_spans())
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -183,7 +228,7 @@ class Struct:
 # ---------------------------------------------------------------------------
 PRINTF_FORMATS = {
     "bool": ("%s", '{expr} ? "true" : "false"'),
-    "char": ("%c", "{expr}"),
+    "char": ("'%c'", "{expr}"),
     "signed char": ("%hhd", "{expr}"),
     "unsigned char": ("%hhu", "{expr}"),
     "short int": ("%hd", "{expr}"),
@@ -194,12 +239,51 @@ PRINTF_FORMATS = {
     "long unsigned int": ("%lu", "{expr}"),
     "long long int": ("%lld", "{expr}"),
     "long long unsigned int": ("%llu", "{expr}"),
-    "float": ("%.3f", "static_cast<double>({expr})"),
-    "double": ("%.6f", "{expr}"),
-    "long double": ("%.6Lf", "{expr}"),
+    # %.6g comme scry.runtime.memory.decode : l'IHM Python et le visualiseur
+    # C++ affichent ainsi les memes chaines pour les memes octets.
+    "float": ("%.6g", "static_cast<double>({expr})"),
+    "double": ("%.6g", "{expr}"),
+    "long double": ("%.6Lg", "{expr}"),
 }
 
 
-def printf_for(type_name: str):
-    """Retourne (format, expression) pour un type fondamental, sinon None."""
-    return PRINTF_FORMATS.get(type_name.strip())
+# Alias de taille fixe : pygccxml rend le nom du typedef ('::uint64_t'), pas le
+# type fondamental. Sans cette table, aucun entier de <cstdint> n'est decode.
+FIXED_WIDTH_ALIASES = {
+    "int8_t": "signed char",
+    "uint8_t": "unsigned char",
+    "int16_t": "short int",
+    "uint16_t": "short unsigned int",
+    "int32_t": "int",
+    "uint32_t": "unsigned int",
+    "int64_t": "long long int",
+    "uint64_t": "long long unsigned int",
+}
+# Alias dont la taille depend de l'architecture : resolus par la taille du champ.
+SIZED_ALIASES = {
+    "size_t": ("unsigned int", "long long unsigned int"),
+    "uintptr_t": ("unsigned int", "long long unsigned int"),
+    "ptrdiff_t": ("int", "long long int"),
+    "intptr_t": ("int", "long long int"),
+}
+
+
+def canonical_type(type_name: str, size: Optional[int] = None) -> str:
+    """Type fondamental derriere un alias standard, sinon le nom tel quel."""
+    name = type_name.strip()
+    bare = name
+    for prefix in ("::", "std::", "::std::"):
+        if bare.startswith(prefix):
+            bare = bare[len(prefix):]
+    if bare in FIXED_WIDTH_ALIASES:
+        return FIXED_WIDTH_ALIASES[bare]
+    if bare in SIZED_ALIASES:
+        small, large = SIZED_ALIASES[bare]
+        return large if size == 8 else small
+    return name
+
+
+def printf_for(type_name: str, size: Optional[int] = None):
+    """Retourne (format, expression) pour un type fondamental, sinon None.
+    Les alias de <cstdint> et <cstddef> sont ramenes a leur type fondamental."""
+    return PRINTF_FORMATS.get(canonical_type(type_name, size))

@@ -92,6 +92,15 @@ emit_abi_checks = true
 output_header = introspection.generated.h
 abi_header = abi_checks.generated.h
 
+[viewer]
+; Visualiseur C++ natif : 'scry viewer --run' ou scry_viewer.bat. Il est
+; compile avec le runtime de [castxml] cl_flags, /MD a defaut.
+; Sources de Dear ImGui, clonees a ce tag si le dossier est absent.
+imgui_dir = third_party/imgui
+imgui_tag = v1.92.9b
+; Executable et objets.
+build_dir = build/viewer
+
 [verify]
 ; Profils de build contre lesquels 'scry verify' compile les assertions ABI,
 ; separes par des ;  Format 'nom: options de cl'. Reprendre les options de la

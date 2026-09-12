@@ -28,8 +28,26 @@ premier lancement il crée `.venv`, installe les dépendances et copie
 `scry.ini.example`. Aux lancements suivants il se contente d'activer le venv :
 pip n'est relancé que si `pyproject.toml` a changé. La console reste ouverte ;
 `aide` y liste les commandes, `tests` lance les tests. `scry_tests.bat` fait la
-même préparation, lance pytest et laisse lui aussi la console ouverte. Le
-détail du déploiement est en commentaire en tête des deux scripts.
+même préparation, lance pytest et laisse lui aussi la console ouverte.
+`scry_viewer.bat` compile le header généré dans un exécutable ImGui natif et le
+lance : au premier lancement, il clone Dear ImGui dans `third_party/imgui`.
+Le détail du déploiement est en commentaire en tête de chaque script.
+
+### Les deux IHM
+
+`scry ui`, l'IHM Python, montre ce que Scry a compris des headers. Elle occupe
+toute la fenêtre, en trois colonnes à séparateurs déplaçables :
+
+- **Structures** : sizeof et padding de chacune.
+- **Membres** : une carte mémoire de sizeof octets, où le padding est hachuré
+  en orange, puis un tree-table. L'arbre est dans la première colonne, et les
+  trous de padding sont des lignes à leur offset.
+- **Inspecteur** : chemin d'accès, offsets absolu et relatif, bits, pas,
+  valeurs d'enum, `offsetof` et lecture C++ copiables, octets bruts.
+
+`scry viewer --run` montre ce que le compilateur en fait : les mêmes lignes,
+dessinées par les fonctions générées. En mode « motif de démo », les deux IHM
+lisent exactement les mêmes octets et doivent afficher les mêmes valeurs.
 
 L'équivalent manuel :
 
@@ -68,6 +86,7 @@ scry gen                 écrit Generated/introspection.generated.h et abi_check
 scry json modele.json    exporte le modèle brut
 scry ui                  visualiseur ImGui
 scry verify              compile les assertions ABI avec cl, pour chaque profil de build
+scry viewer --run        compile et lance le visualiseur C++ natif (ImGui, DirectX 11)
 ```
 
 Options communes : `-H / --header` cible un autre header, `-c / --config` un
@@ -115,6 +134,9 @@ pyproject.toml              métadonnées, dépendances, point d'entrée
 scry.ini.example            modèle de paramétrage, à copier en scry.ini
 scry_console.bat            console prête à l'emploi, déploie le venv au besoin
 scry_tests.bat              même préparation, puis pytest
+scry_viewer.bat             même préparation, puis compile et lance le visualiseur C++
+third_party/imgui/          Dear ImGui, cloné par scry viewer (non versionné)
+build/viewer/               scry_viewer.exe et ses objets (non versionné)
 scry.ini                    paramétrage local, non versionné
 README.md
 DEVELOPPEMENT.md            environnement Python, packaging, publication

@@ -89,6 +89,16 @@ def find_cl(vs_root: Path, toolset: str, host: str = "Hostx64", arch: str = "x64
     return cl
 
 
+def prepare_cl(cfg: Config) -> Path:
+    """cl.exe du toolset configure, avec l'environnement vcvars charge dans
+    os.environ : les processus lances ensuite trouvent INCLUDE, LIB et PATH."""
+    vs_root = find_vs_root()
+    toolset = find_toolset(vs_root, cfg.toolset)
+    cl = find_cl(vs_root, toolset, cfg.host, cfg.arch)
+    apply_vcvars(vs_root, cfg.arch, cfg.toolset)
+    return cl
+
+
 ENV_CASTXML = "SCRY_PATHS_CASTXML"
 
 
