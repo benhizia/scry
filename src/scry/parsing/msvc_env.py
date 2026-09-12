@@ -149,6 +149,34 @@ def apply_vcvars(vs_root: Path, arch: str = "x64", toolset: str = "") -> dict:
 # ---------------------------------------------------------------------------
 # Configuration pygccxml
 # ---------------------------------------------------------------------------
+def _cl_std_flag(std: str) -> str:
+    """Traduit le std de scry.ini ('c++17', 'gnu++20'...) en option de cl."""
+    version = std.lower().replace("gnu++", "c++")
+    if version in ("c++14", "c++17", "c++20"):
+        return "/std:%s" % version
+    return "/std:c++latest"
+
+
+def _cl_with_std(cl: Path, std: str) -> str:
+    """compiler_path qui fait tourner cl dans le bon standard.
+
+    En mode MSVC, castxml interroge cl pour recuperer ses macros predefinies,
+    dont _MSVC_LANG. Sans option, cl est en C++14 : _MSVC_LANG vaut 201402L,
+    et la STL MSVC masque alors <optional>, <variant>, std::string_view...
+    Le -std= passe a clang n'y change rien, c'est _MSVC_LANG qui fait foi.
+
+    castxml accepte '( cc options... )' a la place du seul compilateur, mais
+    pygccxml ecrit sous Windows --castxml-cc-msvc "<compiler_path>" sans
+    option. On compose donc la valeur pour que, une fois entouree de ses
+    guillemets, la ligne devienne :
+
+        --castxml-cc-msvc "(" "C:\\...\\cl.exe" /std:c++17 ")"
+
+    C'est la syntaxe que pygccxml emploie lui-meme sous Linux.
+    """
+    return '(" "%s" %s ")' % (cl, _cl_std_flag(std))
+
+
 def build_castxml_config(cfg: Optional[Config] = None, **overrides):
     """Retourne un xml_generator_configuration_t pret a l'emploi pour MSVC."""
     from pygccxml import parser
@@ -166,7 +194,7 @@ def build_castxml_config(cfg: Optional[Config] = None, **overrides):
         xml_generator="castxml",
         xml_generator_path=str(castxml),
         compiler="msvc",
-        compiler_path=str(cl),
+        compiler_path=_cl_with_std(cl, cfg.std),
         cflags="-std=%s" % cfg.std,
     )
     config.update(overrides)

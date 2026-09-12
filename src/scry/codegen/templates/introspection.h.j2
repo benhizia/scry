@@ -1,4 +1,4 @@
-{#- Template d'introspection ImGui genere par BuffyPyGen.
+{#- Template d'introspection ImGui genere par Scry.
 
      Principe : chaque niveau d'imbrication introduit un pointeur de base local
      et les offsets sont RELATIFS au parent. C'est ce qui permet de boucler sur
@@ -6,8 +6,8 @@
      n'auraient decrit que l'element 0.
 -#}
 // =============================================================================
-//  Fichier genere par BuffyPyGen. Ne pas editer a la main.
-//  Source      : {{ source_header }}
+//  Fichier genere par Scry. Ne pas editer a la main.
+//  Sources     : {{ source_headers | join(", ") }}
 //  Chaine      : castxml + pygccxml, cible {{ compiler }} {{ arch }}, {{ std }}
 // =============================================================================
 #pragma once
@@ -17,7 +17,9 @@
 #include <cstring>
 
 #include "imgui.h"
-#include "{{ source_header }}"
+{% for h in source_headers %}
+#include "{{ h }}"
+{% endfor %}
 
 namespace {{ namespace }} {
 
@@ -114,12 +116,13 @@ inline std::uint64_t read_bits(const std::uint8_t* base, std::size_t offset,
 {% endif %}
 // =============================================================================
 {% if emit_abi_checks %}
+using {{ s.alias }} = {{ s.name }};
 {% if s.size %}
-static_assert(sizeof({{ s.name }}) == {{ s.size }}u,
-              "ABI divergente pour {{ s.name }} : regenerer avec BuffyPyGen.");
+static_assert(sizeof({{ s.alias }}) == {{ s.size }}u,
+              "ABI divergente pour {{ s.name }} : regenerer avec Scry.");
 {% endif %}
 {% for c in s.abi_checks %}
-static_assert(offsetof({{ s.name }}, {{ c.member }}) == {{ c.offset }}u,
+static_assert(offsetof({{ s.alias }}, {{ c.member }}) == {{ c.offset }}u,
               "Offset de {{ s.name }}::{{ c.member }} divergent.");
 {% endfor %}
 {% endif %}

@@ -21,7 +21,7 @@ from scry.codegen import generator as codegen
 from scry.runtime import memory
 from scry.ui.tree import build_tree
 from scry.config import load_config
-from scry.parsing.introspect import IntrospectionError, parse_header
+from scry.parsing.introspect import IntrospectionError, Introspector
 from scry.ui.render import render_struct_summary, render_tree_and_table
 
 
@@ -31,6 +31,7 @@ class AppState(object):
     def __init__(self, cfg=None, header=None):
         self.cfg = cfg if cfg is not None else load_config()
         self.header = header
+        self.files = []          # headers effectivement parses
         self.structs = []
         self.error = ""
         self.selected = 0
@@ -40,6 +41,9 @@ class AppState(object):
         self.last_generated = ""
         self.reload()
 
+    def headers_label(self):
+        return ", ".join(os.path.basename(p) for p in self.files) or "aucun header"
+
     @property
     def current(self):
         if 0 <= self.selected < len(self.structs):
@@ -48,11 +52,18 @@ class AppState(object):
 
     def reload(self):
         self.error = ""
+        introspector = Introspector(self.cfg)
         try:
-            self.structs = parse_header(self.header, cfg=self.cfg)
-            if not self.structs:
+            self.structs = introspector.parse(self.header)
+            self.files = list(introspector.report.parsed)
+            # Echecs partiels et conflits d'ABI : le modele est la, mais
+            # incomplet ou douteux, cela doit se voir.
+            problems = introspector.report.lines()
+            if problems:
+                self.error = "\n".join(problems)
+            elif not self.structs:
                 self.error = ("Aucune structure de premier niveau dans %s"
-                              % (self.header or self.cfg.header))
+                              % self.headers_label())
         except IntrospectionError as exc:
             self.structs, self.error = [], str(exc)
         except Exception as exc:  # castxml, MSVC, template : on affiche au lieu de crasher
@@ -80,7 +91,7 @@ class AppState(object):
 def draw_control_panel(state):
     imgui.begin("Controles")
 
-    imgui.text_disabled(str(state.header or state.cfg.header or "aucun header"))
+    imgui.text_disabled(state.headers_label())
     imgui.text_disabled("%s %s / %s" % (state.cfg.compiler, state.cfg.arch, state.cfg.std))
     imgui.separator()
 

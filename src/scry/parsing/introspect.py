@@ -1,10 +1,35 @@
-"""Extraction du modele a partir d'un header C++, via pygccxml et castxml.
+"""Extraction du modele a partir de headers C++, via pygccxml et castxml.
 
 Tout le savoir sur les pieges de pygccxml est concentre ici. Le reste du projet
-ne voit que src.scry.model.
+ne voit que scry.model.
 
-Pieges traites, chacun rencontre pour de vrai :
+MULTI-FICHIERS
+--------------
+Chaque header est parse SEPAREMENT, et la fusion se fait sur le modele, pas sur
+les arbres de declarations. Ce n'est pas un choix de confort.
 
+parser.parse() passe par project_reader_t, qui execute systematiquement
+_join_class_hierarchy(), une phase destinee a reconcilier les arbres issus de
+plusieurs fichiers. Elle plante sur les hierarchies de templates de la STL :
+
+    leaved_base = leaved_classes[self._create_key(base_info.related_class)]
+    KeyError: (('...type_traits', 1874), ('::', 'std', 'type'))
+
+La classe de base existe dans l'AST mais pas dans la liste aplatie construite
+par la fusion. C'est reproductible des qu'un header inclut <variant>,
+<optional>, <string> ou <map>, donc en pratique des qu'on sort du C 
+structurel. On refait ici le pipeline utile a la main, et la fusion se passe
+plus haut, sur des dataclasses plates ou elle est triviale et verifiable.
+
+Bonus : la fusion au niveau du modele detecte qu'un meme type a deux layouts
+differents selon le header d'ou on l'observe. C'est un signal d'ABI, pas un
+detail d'implementation.
+
+A ne pas confondre avec les repertoires d'include, qui restent de simples -I
+passes a castxml via [castxml] include_paths.
+
+PIEGES PYGCCXML, chacun rencontre pour de vrai
+----------------------------------------------
   * class_t n'a pas de decl_type. Seuls variable_t et typedef_t en ont. Une
     struct imbriquee apparait dans la liste des membres au meme titre qu'un
     champ, d'ou l'AttributeError classique.
@@ -12,25 +37,28 @@ Pieges traites, chacun rencontre pour de vrai :
     imbriques melanges a ceux du parent. Il faut recursive=False.
   * byte_offset et byte_size sont des flottants. Pour un champ de bits,
     l'offset est fractionnaire : 392.125 signifie octet 392, bit 1.
+  * remove_alias() reconstruit le type et perd byte_size. Un pointer_t qui
+    annoncait 8 octets en annonce 0 apres resolution.
   * Les membres statiques ont un byte_offset de 0.0 qui ne veut rien dire.
   * Une struct ou union anonyme a un name vide, et son decl_string vaut le nom
-    de la classe englobante, ce qui est trompeur. Il faut passer par la
-    declaration et non par la chaine de type.
-  * src.scry.introspect(header_file=...) est recursif et remonte aussi les types imbriques
-    et anonymes. Pour une liste de racines, filtrer sur parent == namespace.
-  * Le filtre header_file compare des chaines. Sur Windows, casse et
-    separateurs different, d'ou des listes vides sans erreur. On compare des
-    chemins normalises.
+    de la classe englobante, ce qui est trompeur.
+  * classes() est recursif et remonte aussi les types imbriques et anonymes.
+    Pour une liste de racines, filtrer sur parent == namespace.
+  * Le filtre par fichier compare des chaines. Sur Windows, casse et
+    separateurs different, d'ou des listes vides sans erreur.
   * Un type incomplet, pointe mais jamais defini, donne un class_declaration_t
     sans byte_size.
   * Les templates n'existent dans l'AST que s'ils sont instancies.
   * Les structures auto-referencantes bouclent sans garde-fou.
 """
 
+import fnmatch
+import glob
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from pygccxml import declarations, parser, utils
+from pygccxml.parser import declarations_joiner, source_reader
 
 from scry import model
 from scry.config import Config, load_config
@@ -54,12 +82,58 @@ def _int_or_none(value) -> Optional[int]:
         return None
 
 
+def _qualified_name(decl) -> str:
+    """Nom qualifie sans le :: initial.
+
+    Indispensable en multi-fichiers : deux namespaces peuvent contenir un type
+    du meme nom court. C'est aussi ce qu'il faut au C++ genere pour ecrire
+    sizeof() et offsetof() correctement.
+    """
+    try:
+        full = declarations.full_name(decl)
+    except Exception:
+        return decl.name
+    return full[2:] if full.startswith("::") else full
+
+
+class ParseReport(object):
+    """Ce qui s'est passe pendant un parsing multi-fichiers.
+
+    Separe du resultat : le modele reste une simple liste de Struct, et les
+    incidents sont consultables sans polluer les consommateurs qui s'en fichent.
+    """
+
+    def __init__(self):
+        self.parsed = []        # type: List[str]
+        self.failures = []      # type: List[Tuple[str, str]]
+        self.duplicates = []    # type: List[str]
+        self.conflicts = []     # type: List[str]
+
+    @property
+    def ok(self) -> bool:
+        return not self.failures and not self.conflicts
+
+    def lines(self, verbose: bool = False) -> List[str]:
+        """Incidents a afficher. Les doublons sont du bruit courant des qu'un
+        header commun est inclus partout : ils ne sortent qu'en verbeux."""
+        out = []
+        for path, err in self.failures:
+            out.append("[echec] %s : %s" % (os.path.basename(path), err))
+        for msg in self.conflicts:
+            out.append("[conflit] %s" % msg)
+        if verbose:
+            for msg in self.duplicates:
+                out.append("[doublon] %s" % msg)
+        return out
+
+
 class Introspector(object):
     def __init__(self, cfg: Optional[Config] = None):
         self.cfg = cfg or load_config()
         self._xml_config = None
+        self.report = ParseReport()
 
-    # -- configuration castxml ---------------------------------------------
+    # -- configuration ------------------------------------------------------
     def xml_config(self):
         if self._xml_config is not None:
             return self._xml_config
@@ -89,34 +163,205 @@ class Introspector(object):
             )
         return self._xml_config
 
-    # -- parsing ------------------------------------------------------------
-    def parse(self, header=None) -> List[model.Struct]:
-        header = str(header or self.cfg.header or "")
-        if not header:
-            raise IntrospectionError("Aucun header : renseigne [paths] header dans scry.ini")
-        full = os.path.abspath(header)
+    @property
+    def stop_on_error(self) -> bool:
+        return self.cfg.get_bool("introspection", "stop_on_error", False)
+
+    @property
+    def root_globs(self) -> List[str]:
+        """Motifs de fichiers dont les types sont retenus comme racines.
+
+        Par defaut, seuls les headers explicitement parses fournissent des
+        racines. Ces motifs permettent d'elargir aux headers atteints via les
+        repertoires d'include, sans pour autant remonter toute la STL.
+        """
+        return self.cfg.get_list("introspection", "root_globs")
+
+    # -- resolution des chemins ---------------------------------------------
+    def resolve_headers(self, headers=None) -> List[str]:
+        """Liste de headers absolus, dedupliquee, ordre stable.
+
+        Accepte une chaine, une liste, ou rien. Sans argument, prend
+        [paths] headers puis, a defaut, [paths] header. Les motifs glob sont
+        developpes, y compris ** en recursif.
+        """
+        if headers is None:
+            raw = self.cfg.get_list("paths", "headers")
+            if not raw and self.cfg.header:
+                raw = [str(self.cfg.header)]
+        elif isinstance(headers, str):
+            raw = [headers]
+        else:
+            raw = [str(h) for h in headers]
+
+        if not raw:
+            raise IntrospectionError(
+                "Aucun header. Renseigne [paths] headers dans scry.ini, "
+                "ou passe -H."
+            )
+
+        resolved = []
+        seen = set()
+        for entry in raw:
+            for path in self._expand(entry):
+                key = _norm(path)
+                if key not in seen:
+                    seen.add(key)
+                    resolved.append(path)
+
+        if not resolved:
+            raise IntrospectionError(
+                "Aucun fichier ne correspond a : %s" % ", ".join(raw))
+        return resolved
+
+    def _expand(self, entry: str) -> List[str]:
+        path = entry if os.path.isabs(entry) else os.path.join(str(self.cfg.root), entry)
+        if any(ch in entry for ch in "*?["):
+            matches = sorted(glob.glob(path, recursive=True))
+            if not matches:
+                self.report.failures.append((entry, "aucune correspondance"))
+            return [os.path.abspath(m) for m in matches if os.path.isfile(m)]
+        full = os.path.abspath(path)
         if not os.path.isfile(full):
             raise IntrospectionError("Header introuvable : %s" % full)
+        return [full]
 
-        cache = None
-        cache_file = self.cfg.cache_file
-        if cache_file:
-            os.makedirs(os.path.dirname(str(cache_file)), exist_ok=True)
-            cache = parser.file_cache_t(str(cache_file))
+    # -- parsing ------------------------------------------------------------
+    def parse(self, headers=None) -> List[model.Struct]:
+        """Parse un ou plusieurs headers et retourne le modele fusionne."""
+        self.report = ParseReport()
+        files = self.resolve_headers(headers)
 
-        decls = parser.parse([full], self.xml_config(), cache=cache)
+        cache = self._open_cache()
+        merged = {}          # nom qualifie -> Struct
+        order = []           # noms, pour un ordre de sortie stable
+
+        for full in files:
+            try:
+                structs = self.parse_one(full, cache)
+            except Exception as exc:
+                if self.stop_on_error:
+                    raise
+                self.report.failures.append((full, self._describe_failure(exc)))
+                continue
+
+            self.report.parsed.append(full)
+            for struct in structs:
+                self._merge(merged, order, struct, full)
+
+        if cache is not None:
+            cache.flush()
+
+        if not self.report.parsed and self.report.failures:
+            raise IntrospectionError(
+                "Aucun header n'a pu etre parse :\n  %s"
+                % "\n  ".join(self.report.lines(verbose=True)))
+
+        return [merged[name] for name in order]
+
+    @staticmethod
+    def _describe_failure(exc: Exception) -> str:
+        # Quand castxml echoue, pygccxml ne remonte que l'absence du XML de
+        # sortie. Les vraies erreurs de compilation sont deja sur stderr.
+        if isinstance(exc, RuntimeError) and "xml file does not exist" in str(exc):
+            return "castxml a echoue, voir ses erreurs de compilation ci-dessus"
+        return "%s: %s" % (type(exc).__name__, exc)
+
+    def parse_one(self, full: str, cache=None) -> List[model.Struct]:
+        """Parse un seul header. Sert aussi de point d'entree pour les tests."""
+        decls = self._read_declarations(full, cache)
         global_ns = declarations.get_global_namespace(decls)
+        return [self.build_struct(cls) for cls in self._root_classes(global_ns, full)]
 
-        roots = self._root_classes(global_ns, full)
-        return [self.build_struct(cls) for cls in roots]
+    def _open_cache(self):
+        cache_file = self.cfg.cache_file
+        if not cache_file:
+            return None
+        directory = os.path.dirname(str(cache_file))
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        return parser.file_cache_t(str(cache_file))
 
+    def _read_declarations(self, full: str, cache=None):
+        """Lit un header sans passer par project_reader_t.
+
+        Voir l'explication en tete de module : la phase de fusion de
+        project_reader_t plante sur la STL et ne sert qu'au multi-fichiers,
+        que l'on gere nous-memes plus haut. On refait donc les deux etapes
+        utiles, jointure des declarations par namespace et liaison des
+        typedefs, et on omet la fusion de hierarchie ainsi que la reliaison
+        des types declares, qui n'ont d'objet que dans le cas multi-fichiers.
+        """
+        reader = source_reader.source_reader_t(self.xml_config(), cache, None)
+        decls = reader.read_file(full)
+
+        for ns in decls:
+            if isinstance(ns, declarations.namespace_t):
+                declarations_joiner.join_declarations(ns)
+        declarations_joiner.bind_aliases(declarations.make_flatten(decls))
+        return decls
+
+    # -- fusion --------------------------------------------------------------
+    def _merge(self, merged: Dict[str, model.Struct], order: List[str],
+               struct: model.Struct, source: str):
+        """Insere une Struct dans le modele fusionne.
+
+        Un meme type vu depuis deux headers doit donner un seul noeud. S'il
+        donne deux layouts differents, on garde le premier et on le signale :
+        c'est une divergence d'ABI, pas un doublon anodin.
+        """
+        existing = merged.get(struct.name)
+        if existing is None:
+            merged[struct.name] = struct
+            order.append(struct.name)
+            return
+
+        if self._same_layout(existing, struct):
+            self.report.duplicates.append(
+                "%s, defini dans %s, atteint aussi via %s"
+                % (struct.name, os.path.basename(struct.header or ""),
+                   os.path.basename(source)))
+            return
+
+        self.report.conflicts.append(
+            "%s : sizeof=%s via %s, sizeof=%s via %s. "
+            "Layouts divergents, le premier est conserve."
+            % (struct.name, existing.size, os.path.basename(existing.header or ""),
+               struct.size, os.path.basename(struct.header or "")))
+
+    @staticmethod
+    def _same_layout(a: model.Struct, b: model.Struct) -> bool:
+        if a.size != b.size or a.align != b.align:
+            return False
+        fa = [(f.name, f.abs_offset, f.size) for f, _ in a.walk()]
+        fb = [(f.name, f.abs_offset, f.size) for f, _ in b.walk()]
+        return fa == fb
+
+    # -- selection des racines ----------------------------------------------
     def _root_classes(self, global_ns, header_full: str):
-        """Classes definies dans le header, au premier niveau seulement."""
+        """Classes retenues comme racines pour ce header.
+
+        Sont retenues celles definies dans le header lui-meme, plus celles
+        dont le fichier correspond a [introspection] root_globs. Sans ce
+        second filtre, les types apportes par les repertoires d'include
+        resteraient invisibles ; avec un motif trop large, on remonterait
+        toute la STL.
+        """
         target = _norm(header_full)
+        # normcase des deux cotes : sous Windows il abaisse la casse, ailleurs
+        # il est neutre. Melanger normcase et lower() casse la comparaison sur
+        # les systemes sensibles a la casse.
+        patterns = [os.path.normcase(os.path.abspath(p)) if os.path.isabs(p)
+                    else os.path.normcase(p.replace("/", os.sep))
+                    for p in self.root_globs]
+
         out = []
         for cls in global_ns.classes(allow_empty=True):
             loc = getattr(cls, "location", None)
-            if loc is None or _norm(loc.file_name) != target:
+            if loc is None:
+                continue
+            where = _norm(loc.file_name)
+            if where != target and not self._matches(where, patterns):
                 continue
             # Ecarter les types imbriques et anonymes : ce sont des enfants,
             # ils seront visites lors de la descente dans leur parent.
@@ -125,13 +370,26 @@ class Introspector(object):
             if not cls.name:
                 continue
             out.append(cls)
-        out.sort(key=lambda c: c.name)
+
+        out.sort(key=_qualified_name)
         return out
+
+    @staticmethod
+    def _matches(path: str, patterns: Sequence[str]) -> bool:
+        for pattern in patterns:
+            if fnmatch.fnmatch(path, pattern):
+                return True
+            # Motif relatif : on teste aussi la fin du chemin, pour que
+            # "inc/*.h" attrape D:\proj\inc\truc.h sans chemin absolu.
+            if not os.path.isabs(pattern) and fnmatch.fnmatch(
+                    path, "*" + os.sep + pattern):
+                return True
+        return False
 
     # -- construction du modele ---------------------------------------------
     def build_struct(self, cls) -> model.Struct:
         struct = model.Struct(
-            name=cls.name,
+            name=_qualified_name(cls),
             kind=str(cls.class_type),
             size=_int_or_none(getattr(cls, "byte_size", None)),
             align=_int_or_none(getattr(cls, "byte_align", None)),
@@ -139,7 +397,7 @@ class Introspector(object):
             is_polymorphic=self._is_polymorphic(cls),
         )
         struct.fields = self._members(cls, base_offset=0, path="obj",
-                                     depth=0, seen=(self._key(cls),))
+                                      depth=0, seen=(self._key(cls),))
         return struct
 
     def _is_polymorphic(self, cls) -> bool:
@@ -160,7 +418,8 @@ class Introspector(object):
         except Exception:
             return "%s@%d" % (decl.name, id(decl))
 
-    def _members(self, cls, base_offset: int, path: str, depth: int, seen: Tuple[str, ...]) -> List[model.Field]:
+    def _members(self, cls, base_offset: int, path: str, depth: int,
+                 seen: Tuple[str, ...]) -> List[model.Field]:
         fields = []
         try:
             variables = cls.variables(allow_empty=True, recursive=False)
@@ -231,7 +490,6 @@ class Introspector(object):
             if item_size is not None and length is not None:
                 fld.size = item_size * length
             # On ne deplie pas les elements : un char[50] ferait 50 noeuds.
-            # Le type d'element est decrit une fois, l'UI gere l'indexation.
             sub = model.Field(
                 name="[]",
                 type_name=item.decl_string,
@@ -281,10 +539,6 @@ class Introspector(object):
             fld.kind = model.FUNDAMENTAL
             return
 
-        if declarations.is_calldef_pointer(t) if hasattr(declarations, "is_calldef_pointer") else False:
-            fld.kind = model.FUNCTION
-            return
-
         fld.kind = model.UNKNOWN
 
     def _descend_class(self, fld: model.Field, t, depth: int, seen: Tuple[str, ...]):
@@ -307,7 +561,6 @@ class Introspector(object):
         fld.kind = str(decl.class_type)
         fld.is_anonymous = not decl.name
         if fld.is_anonymous:
-            # decl_string d'un type anonyme renvoie le nom du parent : inutilisable.
             fld.type_name = "<%s anonyme>" % fld.kind
         else:
             fld.type_name = decl.name
@@ -354,9 +607,9 @@ class Introspector(object):
 # ---------------------------------------------------------------------------
 # API de commodite
 # ---------------------------------------------------------------------------
-def parse_header(header=None, cfg: Optional[Config] = None) -> List[model.Struct]:
-    return Introspector(cfg).parse(header)
+def parse_header(headers=None, cfg: Optional[Config] = None) -> List[model.Struct]:
+    return Introspector(cfg).parse(headers)
 
 
-def index_by_name(structs: List[model.Struct]) -> Dict[str, model.Struct]:
+def index_by_name(structs: Iterable[model.Struct]) -> Dict[str, model.Struct]:
     return dict((s.name, s) for s in structs)

@@ -71,6 +71,9 @@ def struct_context(struct_info: model.Struct, cfg: Config) -> Dict:
     return {
         "name": struct_info.name,
         "func": "draw_%s" % _cpp_identifier(struct_info.name),
+        # offsetof est une macro : la virgule de RingBuffer<T, 8> couperait son
+        # premier argument en deux. Les assertions passent par cet alias.
+        "alias": "abi_%s" % _cpp_identifier(struct_info.name),
         "kind": struct_info.kind,
         "size": struct_info.size,
         "align": struct_info.align,
@@ -81,13 +84,37 @@ def struct_context(struct_info: model.Struct, cfg: Config) -> Dict:
     }
 
 
+def source_headers(structs: List[model.Struct], cfg: Optional[Config] = None,
+                   header=None) -> List[str]:
+    """Headers a inclure dans le C++ genere, en noms courts, ordre stable.
+
+    Chaque Struct connait le header dont elle vient : c'est la source fiable
+    en multi-fichiers. Le parametre header (chaine ou liste, comme -H) et
+    [paths] header ne servent que de repli pour un modele sans origine.
+    """
+    paths = [s.header for s in structs if s.header]
+    if not paths:
+        if isinstance(header, (list, tuple)):
+            paths = [str(h) for h in header]
+        elif header:
+            paths = [str(header)]
+        elif cfg is not None and cfg.header:
+            paths = [str(cfg.header)]
+
+    out = []
+    for path in paths:
+        name = os.path.basename(path)
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
 def build_context(structs: List[model.Struct], cfg: Optional[Config] = None,
-                  header: Optional[str] = None) -> Dict:
+                  header=None) -> Dict:
     cfg = cfg or load_config()
-    source_header = header or (str(cfg.header) if cfg.header else "")
     return {
         "namespace": cfg.cpp_namespace,
-        "source_header": os.path.basename(source_header),
+        "source_headers": source_headers(structs, cfg, header),
         "emit_abi_checks": cfg.emit_abi_checks,
         "compiler": cfg.compiler,
         "arch": cfg.arch,
