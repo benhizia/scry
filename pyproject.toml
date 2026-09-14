@@ -29,6 +29,12 @@ ui = [
 dev = [
     "pytest>=7.0",
     "ruff>=0.1",
+    "pybind11>=2.12",
+]
+# Headers pybind11 pour compiler les bindings generes (scry gen --pybind) :
+# module Python ou interpreteur embarque dans l'application.
+pybind = [
+    "pybind11>=2.12",
 ]
 
 # Point d'entree. Apres 'pip install -e .', la commande 'scry' est disponible
@@ -53,4 +59,4 @@ target-version = "py39"
 # Les tests portent sur le modele, qui ne depend ni de castxml ni de pygccxml.
 # Data/ ne contient que les headers d'essai, pas des tests.
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "autotest/tests"]

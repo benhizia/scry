@@ -95,6 +95,7 @@ scry json modele.json    exporte le modèle brut
 scry ui                  visualiseur ImGui
 scry verify              compile les assertions ABI avec cl, pour chaque profil de build
 scry viewer --run        compile et lance le visualiseur C++ natif (ImGui, DirectX 11)
+scry gen --pybind        ajoute les bindings pybind11, le stub .pyi et le fragment CMake
 ```
 
 Options communes : `-H / --header` cible un autre header, `-c / --config` un
@@ -146,6 +147,11 @@ scry_viewer.bat             même préparation, puis compile et lance le visuali
 third_party/README.md       où déposer les sources de Dear ImGui
 third_party/imgui/          Dear ImGui, à la main ou via --fetch-imgui (non versionné)
 build/viewer/               scry_viewer.exe et ses objets (non versionné)
+autotest/                   autotest Python embarqué, séparé du paquet Scry
+  python/autotest/          runtime des scénarios (Runner, cycles, until, expect)
+  cpp/autotest_embed.h      interpréteur embarqué, un tick() par cycle
+  demo/                     application legacy factice (CMake) et scénarios
+  run_demo.bat              génère, construit et lance la démo
 scry.ini                    paramétrage local, non versionné
 README.md
 DEVELOPPEMENT.md            environnement Python, packaging, publication
@@ -372,7 +378,35 @@ architectures qui l'exigent.
 
 ---
 
-## 8. Améliorations recommandées
+## 8. Bindings pybind11 et autotest Python embarqué
+
+`scry gen --pybind` génère des bindings pybind11 pour tous les types des
+headers. Ce sont des **vues** sur la mémoire C++ : depuis Python, écrire un
+attribut écrit dans le programme. Le header généré inclut les `static_assert`
+d'ABI : il ne compile que si le layout du modèle est bien celui du compilateur.
+
+Le dossier [autotest/](autotest/README.md) s'en sert pour embarquer un
+interpréteur Python dans une application séquencée. À chaque cycle, après le
+code métier, des scénarios Python (`async def`, `await cycles(n)`,
+`expect(...)`) positionnent des entrées et vérifient des sorties directement
+dans ses structures. Il n'y a pas d'IPC, et l'étape du séquenceur garantit la
+cohérence. `autotest\run_demo.bat` construit et lance une démo complète avec
+CMake.
+
+Ce qu'il faut savoir côté Scry :
+
+- **Modèle.** Il porte maintenant les types qualifiés (`qualified_type`), les
+  vraies valeurs des enums (`enum_items`) et une empreinte de layout
+  (`layout_hash`, FNV-1a 64 bits), identique en C++, en Python et dans le JSON.
+- **Sortie.** La section `[pybind]` de `scry.ini` règle les noms des fichiers
+  produits et les instances annoncées dans le stub `.pyi`.
+- **Test lent.** `SCRY_INTEGRATION=1 pytest tests/test_pybind_build.py`
+  compile un vrai module et vérifie, octet par octet, que les écritures faites
+  par Python tombent aux offsets du modèle.
+
+---
+
+## 9. Améliorations recommandées
 
 Par ordre de rapport valeur sur effort.
 
@@ -449,7 +483,7 @@ comme non lisibles à distance. C'est aujourd'hui une limite non signalée.
 
 ---
 
-## 9. Notes pour un agent reprenant le projet
+## 10. Notes pour un agent reprenant le projet
 
 - Toute modification liée au parsing va dans `parsing/introspect.py`. Si un
   autre module a besoin d'importer pygccxml, enrichir le modèle plutôt que

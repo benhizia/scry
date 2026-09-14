@@ -40,6 +40,9 @@ class Field:
     abs_offset: int = 0              # depuis la racine, en octets
     size: Optional[int] = None       # en octets, None si inconnu
     access_path: str = ""            # "obj.origin.lat"
+    # Nom complet du type classe ou enum ("testgen::FlightPlan::Leg"). Vide
+    # pour un type anonyme ou fondamental. Sert de cle aux bindings pybind11.
+    qualified_type: str = ""
 
     # Tableaux
     array_len: Optional[int] = None
@@ -51,6 +54,9 @@ class Field:
 
     # Enums
     enum_values: List[str] = dc_field(default_factory=list)
+    # Paires (nom, valeur) telles que declarees : rien ne garantit 0, 1, 2...
+    enum_items: List[Tuple[str, int]] = dc_field(default_factory=list)
+    enum_type: str = ""              # nom qualifie de l'enum
 
     # Drapeaux
     is_static: bool = False
@@ -96,11 +102,14 @@ class Field:
             "abs_offset": self.abs_offset,
             "size": self.size,
             "access_path": self.access_path,
+            "qualified_type": self.qualified_type,
             "array_len": self.array_len,
             "elem_type": self.elem_type,
             "bit_width": self.bit_width,
             "bit_offset": self.bit_offset,
             "enum_values": list(self.enum_values),
+            "enum_items": [[name, value] for name, value in self.enum_items],
+            "enum_type": self.enum_type,
             "is_static": self.is_static,
             "is_anonymous": self.is_anonymous,
             "is_const": self.is_const,
@@ -151,6 +160,39 @@ def layout_items(fields: List[Field], size: Optional[int], with_holes: bool = Tr
     return [(offset, fld, span) for offset, _, _, fld, span in items]
 
 
+def enum_cases(fld: Field) -> List[Tuple[int, str]]:
+    """(valeur, nom) d'une enum, valeur ramenee en signe sur la taille du champ.
+
+    C'est ainsi que la memoire est lue, en Python comme en C++ : une valeur
+    0xFF sur un octet se lit -1. Les alias de meme valeur sont ecartes, sinon
+    un switch C++ aurait deux cas identiques. Sans valeurs connues, on retombe
+    sur les noms seuls, numerotes a partir de 0.
+    """
+    bits = 8 * (fld.size or 4)
+    items = fld.enum_items or [(name, i) for i, name in enumerate(fld.enum_values)]
+    out, seen = [], set()
+    for name, value in items:
+        if value >= 1 << (bits - 1):
+            value -= 1 << bits
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append((value, name))
+    return out
+
+
+def enum_name(fld: Field, value: int) -> Optional[str]:
+    """Nom de l'enumerateur pour une valeur lue en signe, ou None."""
+    return dict(enum_cases(fld)).get(value)
+
+
+def _fnv1a64(text: str) -> int:
+    h = 0xCBF29CE484222325
+    for byte in text.encode("utf-8"):
+        h = ((h ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
 def shows_holes(fld: Field) -> bool:
     """Un agregat imbrique n'affiche ses trous que s'il a un membre visible.
 
@@ -196,6 +238,21 @@ class Struct:
             if node.is_leaf and node.is_readable:
                 yield node
 
+    @property
+    def layout_hash(self) -> int:
+        """Empreinte du layout, FNV-1a 64 bits.
+
+        Couvre le nom, sizeof, alignof et, pour chaque membre parcouru, chemin,
+        offset absolu, taille, type et bits. Deux programmes qui annoncent la
+        meme empreinte lisent les memes octets de la meme facon. La meme valeur
+        est emise en C++ (abi_checks.generated.h) et dans le JSON du modele.
+        """
+        parts = ["%s|%s|%s" % (self.name, self.size, self.align)]
+        for f, _ in self.walk():
+            parts.append("%s|%s|%s|%s|%s|%s" % (f.access_path, f.abs_offset, f.size,
+                                                f.type_name, f.bit_offset, f.bit_width))
+        return _fnv1a64("\n".join(parts))
+
     def padding_spans(self) -> List[Tuple[int, int]]:
         """Trous du premier niveau, voir padding_spans()."""
         return padding_spans(self.fields, self.size)
@@ -219,6 +276,7 @@ class Struct:
             "header": self.header,
             "is_polymorphic": self.is_polymorphic,
             "padding": self.padding_bytes(),
+            "layout_hash": "0x%016X" % self.layout_hash,
             "fields": [f.to_dict() for f in self.fields],
         }
 

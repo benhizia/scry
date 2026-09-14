@@ -24,6 +24,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 {% for h in source_headers %}
 #include "{{ h }}"
@@ -35,6 +36,9 @@ namespace abi {
 {% for s in structs %}
 // {{ s.name }}
 using {{ s.alias }} = {{ s.name }};
+// Empreinte du layout (FNV-1a 64) : a embarquer dans un en-tete de message ou
+// de memoire partagee pour detecter a l'execution deux layouts differents.
+constexpr std::uint64_t {{ s.alias }}_layout_hash = {{ s.layout_hash }}ull;
 {% if s.size %}
 static_assert(sizeof({{ s.alias }}) == {{ s.size }}u,
               "Scry : sizeof({{ s.name }}) differe de castxml ({{ s.size }}).");

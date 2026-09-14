@@ -537,7 +537,10 @@ class Introspector(object):
             fld.kind = model.ENUM
             try:
                 enum_decl = declarations.enum_declaration(t)
-                fld.enum_values = [name for name, _ in enum_decl.values]
+                fld.enum_items = [(name, int(value)) for name, value in enum_decl.values]
+                fld.enum_values = [name for name, _ in fld.enum_items]
+                fld.enum_type = _qualified_name(enum_decl)
+                fld.qualified_type = fld.enum_type
                 fld.type_name = enum_decl.name or fld.type_name
             except Exception:
                 pass
@@ -578,6 +581,7 @@ class Introspector(object):
             fld.type_name = "<%s anonyme>" % fld.kind
         else:
             fld.type_name = decl.name
+            fld.qualified_type = _qualified_name(decl)
         fld.size = _int_or_none(getattr(decl, "byte_size", None)) or fld.size
 
         key = self._key(decl)

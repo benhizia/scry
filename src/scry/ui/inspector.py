@@ -129,9 +129,9 @@ def _field_facts(node: TreeNode, s: model.Struct, source: Optional[MemorySource]
         out += [("Elements", str(f.array_len)),
                 ("Pas", "-" if stride is None else "%d o" % stride),
                 ("Type d'element", f.elem_type or "?")]
-    if f.enum_values:
-        out.append(("Valeurs", ", ".join("%d %s" % (i, v)
-                                          for i, v in enumerate(f.enum_values))))
+    if f.enum_values or f.enum_items:
+        out.append(("Valeurs", ", ".join("%d %s" % (value, name)
+                                          for value, name in model.enum_cases(f))))
     if f.truncated:
         out.append(("Descente", TRUNCATION_TEXT.get(f.truncated, f.truncated)))
 

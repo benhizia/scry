@@ -107,9 +107,9 @@ def decode(source: MemorySource, field: model.Field) -> Optional[str]:
         if raw is None:
             return None
         value = int.from_bytes(raw, "little", signed=True)
-        if 0 <= value < len(field.enum_values):
-            return "%s (%d)" % (field.enum_values[value], value)
-        return str(value)
+        # Valeurs reelles de l'enum, pas un index : 'Fast = 10' se lit Fast.
+        name = model.enum_name(field, value)
+        return "%s (%d)" % (name, value) if name is not None else str(value)
 
     # Cas tres frequent dans les headers tiers : char[N] utilise comme chaine.
     if field.kind == model.ARRAY and field.elem_type in ("char", "signed char", "unsigned char"):

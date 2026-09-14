@@ -1,0 +1,307 @@
+{#- Bindings pybind11 generes par Scry.
+
+     Le contenu vient de scry.codegen.pybind.Binder, qui prepare les lignes C++
+     des membres. Ce template ne fait qu'assembler : aides communes, alias de
+     types, sous-modules, classes, enums, vues de tableaux, puis membres.
+-#}
+// =============================================================================
+//  Fichier genere par Scry (scry gen --pybind). Ne pas editer a la main.
+//  Sources     : {{ source_headers | join(", ") }}
+//  Chaine      : castxml + pygccxml, cible {{ compiler }} {{ arch }}, {{ std }}
+//
+//  Des VUES sur la memoire C++, jamais des copies : ecrire un attribut depuis
+//  Python ecrit dans le programme. Point d'entree :
+//
+//      #include "scry_pybind.generated.h"
+//      PYBIND11_EMBEDDED_MODULE(sut, m) {          // ou PYBIND11_MODULE
+//          {{ namespace }}::bind::register_types(m);
+//          m.attr("inputs") = py::cast(&g_inputs, py::return_value_policy::reference);
+//      }
+//
+//  Ne jamais exposer l'adresse d'un objet qui ne vit pas aussi longtemps que
+//  l'interpreteur : les vues n'en prolongent pas la duree de vie.
+// =============================================================================
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+#include <pybind11/numpy.h>
+#include <pybind11/pybind11.h>
+
+{% for h in source_headers %}
+#include "{{ h }}"
+{% endfor %}
+{% if emit_abi_checks %}
+// Les bindings ne compilent que si le layout du modele est celui du compilateur.
+#include "{{ abi_header }}"
+{% endif %}
+
+namespace {{ namespace }} {
+namespace bind {
+
+namespace py = pybind11;
+
+namespace detail {
+
+// Membre scalaire ou agregat : lecture-ecriture si le type est affectable,
+// lecture seule sinon (membre const, type non copiable).
+template <typename C, typename D>
+void field(py::class_<C>& cls, const char* name, D C::*member)
+{
+    if constexpr (std::is_copy_assignable<D>::value)
+        cls.def_readwrite(name, member);
+    else
+        cls.def_readonly(name, member);
+}
+
+// char[N] <-> str. Lecture jusqu'au premier NUL, octets invalides remplaces.
+// L'ecriture refuse une chaine trop longue plutot que de la tronquer en
+// silence : dans un test, une troncature masquerait une erreur.
+template <typename Ch, std::size_t N>
+py::str char_get(const Ch (&text)[N])
+{
+    const char* p = reinterpret_cast<const char*>(text);
+    std::size_t n = 0;
+    while (n < N && p[n] != '\0')
+        ++n;
+    return py::reinterpret_steal<py::str>(
+        PyUnicode_DecodeUTF8(p, static_cast<Py_ssize_t>(n), "replace"));
+}
+
+template <typename Ch, std::size_t N>
+void char_set(Ch (&text)[N], const std::string& value, const char* name)
+{
+    if (value.size() > N - 1)
+        throw py::value_error(std::string(name) + " : " + std::to_string(value.size()) +
+                              " octets pour " + std::to_string(N - 1) + " au plus");
+    std::memcpy(text, value.data(), value.size());
+    std::memset(reinterpret_cast<char*>(text) + value.size(), 0, N - value.size());
+}
+
+// Tableau numerique : vue numpy sur la memoire, sans copie. Le proprietaire
+// (l'objet Python de la struct) reste vivant tant que la vue existe.
+template <typename A>
+py::array numeric_view(py::handle owner, A& data)
+{
+    using E = std::remove_all_extents_t<A>;
+    E* first = reinterpret_cast<E*>(&data);
+    if constexpr (std::rank<A>::value == 2) {
+        const std::vector<py::ssize_t> shape = {
+            static_cast<py::ssize_t>(std::extent<A, 0>::value),
+            static_cast<py::ssize_t>(std::extent<A, 1>::value)};
+        const std::vector<py::ssize_t> strides = {
+            static_cast<py::ssize_t>(sizeof(E) * std::extent<A, 1>::value),
+            static_cast<py::ssize_t>(sizeof(E))};
+        return py::array(py::dtype::of<E>(), shape, strides, first, owner);
+    } else {
+        const std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(sizeof(A) / sizeof(E))};
+        const std::vector<py::ssize_t> strides = {static_cast<py::ssize_t>(sizeof(E))};
+        return py::array(py::dtype::of<E>(), shape, strides, first, owner);
+    }
+}
+
+template <typename E, std::size_t N>
+py::array numeric_view(py::handle owner, std::array<E, N>& data)
+{
+    return numeric_view(owner, *reinterpret_cast<E(*)[N]>(data.data()));
+}
+
+// Affectation complete : obj.valeurs = [1, 2, 3, ...], taille verifiee.
+template <typename A>
+void numeric_assign(A& data, py::object value)
+{
+    using E = std::remove_all_extents_t<A>;
+    auto src = py::array_t<E, py::array::c_style | py::array::forcecast>::ensure(value);
+    const std::size_t count = sizeof(A) / sizeof(E);
+    if (!src || static_cast<std::size_t>(src.size()) != count)
+        throw py::value_error("attendu " + std::to_string(count) + " elements");
+    std::memcpy(reinterpret_cast<void*>(&data), src.data(), sizeof(A));
+}
+
+template <typename E, std::size_t N>
+void numeric_assign(std::array<E, N>& data, py::object value)
+{
+    numeric_assign(*reinterpret_cast<E(*)[N]>(data.data()), value);
+}
+
+// Tableau de structures : element par reference.
+template <typename T>
+struct ArrayView
+{
+    T* data;
+    std::size_t size;
+
+    std::size_t index(py::ssize_t i) const
+    {
+        const py::ssize_t n = static_cast<py::ssize_t>(size);
+        if (i < 0)
+            i += n;
+        if (i < 0 || i >= n)
+            throw py::index_error("indice " + std::to_string(i) + " hors de [0, " +
+                                  std::to_string(size) + ")");
+        return static_cast<std::size_t>(i);
+    }
+};
+
+template <typename E, std::size_t N>
+ArrayView<E> make_view(E (&data)[N])
+{
+    return ArrayView<E>{data, N};
+}
+
+template <typename E, std::size_t N>
+ArrayView<E> make_view(std::array<E, N>& data)
+{
+    return ArrayView<E>{data.data(), N};
+}
+
+template <typename T>
+void bind_view(py::handle scope, const char* name)
+{
+    using View = ArrayView<T>;
+    py::class_<View> cls(scope, name);
+    cls.attr("__scry_view__") = true;
+    cls.def("__len__", [](const View& v) { return v.size; });
+    cls.def("__getitem__", [](View& v, py::ssize_t i) -> T& { return v.data[v.index(i)]; },
+            py::return_value_policy::reference_internal);
+    if constexpr (std::is_copy_assignable<T>::value)
+        cls.def("__setitem__",
+                [](View& v, py::ssize_t i, const T& x) { v.data[v.index(i)] = x; });
+    cls.def("__iter__",
+            [](View& v) {
+                return py::make_iterator<py::return_value_policy::reference_internal>(
+                    v.data, v.data + v.size);
+            },
+            py::keep_alive<0, 1>());
+}
+
+// Conversion recursive en types Python simples, pour to_dict() : instantanes
+// et diffs dans les tests, sans reference vers la memoire C++.
+inline py::object to_python(py::handle v)
+{
+    if (py::hasattr(v, "__scry_fields__")) {
+        py::dict out;
+        for (py::handle name : v.attr("__scry_fields__"))
+            out[name] = to_python(v.attr(name));
+        return std::move(out);
+    }
+    if (py::hasattr(v, "__scry_view__")) {
+        py::list out;
+        for (py::handle item : v)
+            out.append(to_python(item));
+        return std::move(out);
+    }
+    if (py::isinstance<py::array>(v))
+        return v.attr("tolist")();
+    if (py::hasattr(py::type::of(v), "__members__"))
+        return v.attr("name");
+    return py::reinterpret_borrow<py::object>(v);
+}
+
+// Services communs a chaque classe.
+template <typename T>
+void services(py::class_<T>& cls, const char* path, py::tuple fields, py::dict layout)
+{
+    cls.attr("__scry_fields__") = fields;
+    cls.attr("__scry_layout__") = layout;
+    cls.def("to_dict", [](py::object self) { return to_python(self); });
+    cls.def("__repr__", [path](const T& o) {
+        char address[32];
+        std::snprintf(address, sizeof(address), "%p", static_cast<const void*>(&o));
+        return std::string("<") + path + " @" + address + ">";
+    });
+    cls.def_property_readonly("__address__",
+                              [](const T& o) { return reinterpret_cast<std::uintptr_t>(&o); });
+    cls.def_static("from_address",
+                   [](std::uintptr_t address) -> T& {
+                       if (address == 0)
+                           throw py::value_error("adresse nulle");
+                       return *reinterpret_cast<T*>(address);
+                   },
+                   py::return_value_policy::reference);
+    if constexpr (std::is_trivially_copyable<T>::value) {
+        // Vue sur un buffer Python (bytearray, mmap, memoire partagee). Le
+        // buffer reste vivant tant que la vue existe ; ne pas le redimensionner.
+        cls.def_static("from_buffer",
+                       [](py::buffer buffer, std::size_t offset) -> T& {
+                           py::buffer_info info = buffer.request(true);
+                           const std::size_t bytes =
+                               static_cast<std::size_t>(info.size) * info.itemsize;
+                           if (offset + sizeof(T) > bytes)
+                               throw py::value_error("buffer trop court");
+                           char* p = static_cast<char*>(info.ptr) + offset;
+                           if (reinterpret_cast<std::uintptr_t>(p) % alignof(T) != 0)
+                               throw py::value_error("buffer mal aligne pour ce type");
+                           return *reinterpret_cast<T*>(p);
+                       },
+                       py::arg("buffer"), py::arg("offset") = 0,
+                       py::return_value_policy::reference, py::keep_alive<0, 1>());
+        cls.def("to_bytes", [](const T& o) {
+            return py::bytes(reinterpret_cast<const char*>(&o), sizeof(T));
+        });
+    }
+    if constexpr (std::is_default_constructible<T>::value && !std::is_abstract<T>::value)
+        cls.def(py::init<>());
+}
+
+}  // namespace detail
+
+inline void register_types(py::module_& m)
+{
+    // -- alias de types -------------------------------------------------------
+{% for t in types %}
+    using {{ t.alias }} = {{ t.cpp }};
+{% endfor %}
+{% for e in enums %}
+    using {{ e.alias }} = {{ e.cpp }};
+{% endfor %}
+
+    // -- namespaces C++ : sous-modules Python ----------------------------------
+{% for ns in namespaces %}
+    py::module_ {{ ns.var }} = {{ ns.parent }}.def_submodule("{{ ns.name }}");
+{% endfor %}
+
+    // -- classes, portees parentes d'abord -------------------------------------
+{% for t in classes %}
+    py::class_<{{ t.alias }}> {{ t.var }}({{ t.scope }}, "{{ t.py_name }}");
+{% endfor %}
+
+    // -- enums, avec leurs valeurs reelles ---------------------------------------
+{% for e in enums %}
+    py::enum_<{{ e.alias }}>({{ e.scope }}, "{{ e.py_name }}")
+{% for py_value, cpp_value in e["values"] %}
+        .value("{{ py_value }}", {{ e.alias }}::{{ cpp_value }})
+{% endfor %}
+        ;
+{% endfor %}
+
+    // -- vues de tableaux de structures -----------------------------------------
+{% for v in views %}
+    detail::bind_view<{{ v.alias }}>(m, "{{ v.name }}");
+{% endfor %}
+
+    // -- membres ------------------------------------------------------------------
+{% for t in types %}
+    // {{ t.qualified or t.cpp }}
+{% for line in t.lines %}
+    {{ line }}
+{% endfor %}
+
+{% endfor %}
+    // Empreintes de layout des structures racines.
+    py::dict hashes;
+{% for key, value in hashes %}
+    hashes["{{ key | cstr }}"] = py::int_({{ value }});
+{% endfor %}
+    m.attr("__scry_layout_hashes__") = hashes;
+}
+
+}  // namespace bind
+}  // namespace {{ namespace }}

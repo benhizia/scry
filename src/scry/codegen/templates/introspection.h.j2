@@ -196,10 +196,16 @@ ImGui::Text("%llu", read_bits({{ base }}, {{ f.offset }}, {{ f.size or 1 }}, {{ 
 ImGui::Text("0x%016llX", static_cast<unsigned long long>(read_at<std::uintptr_t>({{ base }}, {{ f.offset }})));
 {% elif f.kind == 'enum' %}
 {
-    static const char* const names[] = { {% for v in f.enum_values %}"{{ v | cstr }}", {% endfor %}nullptr };
     const long long v = read_sint({{ base }}, {{ f.offset }}, {{ f.size or 4 }});
-    if (v >= 0 && v < {{ f.enum_values | length }})
-        ImGui::Text("%s (%lld)", names[v], v);
+    const char* name = nullptr;
+    switch (v) {
+{% for value, label in f.enum_cases %}
+    case {{ value }}LL: name = "{{ label | cstr }}"; break;
+{% endfor %}
+    default: break;
+    }
+    if (name != nullptr)
+        ImGui::Text("%s (%lld)", name, v);
     else
         ImGui::Text("%lld", v);
 }
@@ -260,6 +266,8 @@ struct StructInfo
     // Instance construite par defaut, initialiseurs de membres compris, ou
     // nullptr si le type est abstrait ou non constructible par defaut.
     const std::uint8_t* (*default_instance)();
+    // Empreinte du layout, identique a abi::<alias>_layout_hash et au JSON.
+    std::uint64_t layout_hash;
 };
 
 namespace detail {
@@ -280,7 +288,8 @@ const std::uint8_t* default_instance()
 inline const StructInfo kStructs[] = {
 {% for s in structs %}
     {"{{ s.name | cstr }}", sizeof({{ s.name }}), alignof({{ s.name }}), {{ s.padding or 0 }}u, {{ 'true' if s.is_polymorphic else 'false' }},
-     static_cast<void (*)(const std::uint8_t*)>(&{{ s.func }}), &detail::default_instance<{{ s.name }}>},
+     static_cast<void (*)(const std::uint8_t*)>(&{{ s.func }}), &detail::default_instance<{{ s.name }}>,
+     {{ s.layout_hash }}ull},
 {% endfor %}
 };
 

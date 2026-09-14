@@ -73,6 +73,20 @@ def test_rendu_cpp_en_tree_table_avec_padding_et_registre():
     assert "&detail::default_instance<P>" in text
 
 
+def test_enum_rendue_par_valeurs_reelles_et_empreinte_emise():
+    fld = model.Field(name="mode", type_name="Mode", kind=model.ENUM, offset=0,
+                      abs_offset=0, size=1, access_path="obj.mode",
+                      enum_items=[("Off", 0), ("Fast", 10), ("Alias", 10)],
+                      enum_type="ns::Mode", qualified_type="ns::Mode")
+    s = model.Struct(name="E", size=1, align=1, header="e.h", fields=[fld])
+    text = generator.render([s], _cfg())
+    assert 'case 10LL: name = "Fast"' in text
+    assert '"Alias"' not in text          # meme valeur : un seul cas
+    abi = generator.render([s], _cfg(), "abi_checks.h.j2")
+    assert "abi_E_layout_hash = 0x%016Xull" % s.layout_hash in abi
+    assert "0x%016Xull}" % s.layout_hash in text   # registre kStructs
+
+
 def test_header_abi_sans_imgui_et_inclus_par_le_header_imgui():
     s = model.Struct(name="A", size=4, align=4, header="Data/a.h")
     abi = generator.render([s], _cfg(), "abi_checks.h.j2")
