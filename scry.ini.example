@@ -95,9 +95,14 @@ abi_header = abi_checks.generated.h
 [viewer]
 ; Visualiseur C++ natif : 'scry viewer --run' ou scry_viewer.bat. Il est
 ; compile avec le runtime de [castxml] cl_flags, /MD a defaut.
-; Sources de Dear ImGui, clonees a ce tag si le dossier est absent.
+; Sources de Dear ImGui, 1.92 minimum. A deposer a la main, voir
+; third_party/README.md, ou a telecharger avec 'scry viewer --fetch-imgui'.
 imgui_dir = third_party/imgui
+; Tag utilise par --fetch-imgui et par auto_download.
 imgui_tag = v1.92.9b
+; true : git clone automatique quand imgui_dir est vide. Desactive par defaut,
+; rien n'est telecharge sans demande explicite.
+auto_download = false
 ; Executable et objets.
 build_dir = build/viewer
 

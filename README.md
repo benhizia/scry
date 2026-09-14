@@ -30,7 +30,15 @@ pip n'est relancé que si `pyproject.toml` a changé. La console reste ouverte ;
 `aide` y liste les commandes, `tests` lance les tests. `scry_tests.bat` fait la
 même préparation, lance pytest et laisse lui aussi la console ouverte.
 `scry_viewer.bat` compile le header généré dans un exécutable ImGui natif et le
-lance : au premier lancement, il clone Dear ImGui dans `third_party/imgui`.
+lance. Il lui faut les sources C++ de Dear ImGui (1.92 minimum) dans
+`third_party/imgui`, et rien n'est téléchargé sans demande. Deux façons de les
+obtenir :
+
+- les déposer à la main : voir [third_party/README.md](third_party/README.md) ;
+- lancer une fois `scry_viewer.bat --fetch-imgui`, qui fait un `git clone`.
+
+S'il manque quoi que ce soit, le visualiseur s'arrête et affiche la marche à
+suivre.
 Le détail du déploiement est en commentaire en tête de chaque script.
 
 ### Les deux IHM
@@ -135,7 +143,8 @@ scry.ini.example            modèle de paramétrage, à copier en scry.ini
 scry_console.bat            console prête à l'emploi, déploie le venv au besoin
 scry_tests.bat              même préparation, puis pytest
 scry_viewer.bat             même préparation, puis compile et lance le visualiseur C++
-third_party/imgui/          Dear ImGui, cloné par scry viewer (non versionné)
+third_party/README.md       où déposer les sources de Dear ImGui
+third_party/imgui/          Dear ImGui, à la main ou via --fetch-imgui (non versionné)
 build/viewer/               scry_viewer.exe et ses objets (non versionné)
 scry.ini                    paramétrage local, non versionné
 README.md

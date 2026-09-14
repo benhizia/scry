@@ -162,7 +162,7 @@ def cmd_viewer(args, cfg):
     introspector = Introspector(cfg)
     structs = introspector.parse(args.header)
     try:
-        exe = viewer_build.build(structs, cfg, header=args.header)
+        exe = viewer_build.build(structs, cfg, header=args.header, fetch=args.fetch_imgui)
     except viewer_build.ViewerError as exc:
         print("[erreur] %s" % exc, file=sys.stderr)
         return 1
@@ -227,6 +227,9 @@ def main(argv=None):
                               help="compile le visualiseur C++ natif (ImGui, DirectX 11)")
     p_viewer.add_argument("--run", action="store_true",
                           help="lance l'executable apres compilation")
+    p_viewer.add_argument("--fetch-imgui", action="store_true",
+                          help="git clone de Dear ImGui s'il est absent ; sinon, "
+                               "deposer les sources a la main (third_party/README.md)")
 
     args = ap.parse_args(argv)
     args.header = getattr(args, "header", None)

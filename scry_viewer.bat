@@ -9,11 +9,17 @@ rem  et dessine les structures avec les fonctions generees.
 rem
 rem    scry_viewer.bat                   compile et lance
 rem    scry_viewer.bat -H Data\x.h       arguments transmis a 'scry viewer'
+rem    scry_viewer.bat --fetch-imgui     telecharge Dear ImGui s'il manque
 rem
 rem  PREMIER LANCEMENT
 rem    - prepare le venv comme scry_console.bat ;
-rem    - clone Dear ImGui dans third_party\imgui, au tag [viewer] imgui_tag
-rem      de scry.ini (git requis). pyimgui n'embarque pas les sources C++ ;
+rem    - il faut les sources de Dear ImGui (1.92 minimum) dans
+rem      third_party\imgui : pyimgui n'embarque pas les sources C++. Rien
+rem      n'est telecharge sans demande. Soit on les depose a la main, voir
+rem      third_party\README.md ; soit on lance une fois
+rem      scry_viewer.bat --fetch-imgui, qui fait un git clone au tag
+rem      [viewer] imgui_tag de scry.ini. S'il manque, le message d'erreur
+rem      donne la marche a suivre ;
 rem    - compile les objets ImGui une fois pour toutes, par jeu d'options.
 rem  Lancements suivants : seul le visualiseur est recompile, en secondes.
 rem
@@ -28,7 +34,8 @@ rem  Dans l'exe, le mode 'motif de demo' lit les memes octets que l'IHM
 rem  Python en mode demo : les valeurs affichees doivent coincider.
 rem
 rem  PREREQUIS : Visual Studio 2022 avec les outils C++ et le Windows SDK
-rem  (DirectX 11), castxml, git. 'scry check' verifie les deux premiers.
+rem  (DirectX 11), castxml. git seulement pour --fetch-imgui. 'scry check'
+rem  verifie les deux premiers.
 rem ===========================================================================
 
 cd /d "%~dp0"

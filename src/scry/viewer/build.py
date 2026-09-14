@@ -7,8 +7,11 @@ En mode motif de demo, il lit les memes octets que l'IHM Python : les valeurs
 affichees doivent coincider.
 
 Chaine :
-  1. Dear ImGui : [viewer] imgui_dir, clone au tag [viewer] imgui_tag s'il
-     manque. pyimgui n'embarque pas les sources C++.
+  1. Dear ImGui : sources dans [viewer] imgui_dir, 1.92 minimum. pyimgui
+     n'embarque pas les sources C++. Rien n'est telecharge sans demande
+     explicite : on les depose a la main (voir third_party/README.md), ou on
+     passe --fetch-imgui, ou [viewer] auto_download = true, pour un
+     git clone au tag [viewer] imgui_tag.
   2. scry gen : les deux headers generes.
   3. cl : objets ImGui compiles une fois par jeu d'options, puis le
      visualiseur, lie en application fenetree Win32 et DirectX 11.
@@ -20,6 +23,7 @@ header genere le verifient.
 
 import hashlib
 import os
+import re
 import subprocess
 from importlib.resources import files
 from pathlib import Path
@@ -41,6 +45,9 @@ IMGUI_SOURCES = [
     "backends/imgui_impl_win32.cpp",
     "backends/imgui_impl_dx11.cpp",
 ]
+REQUIRED_FILES = ["imgui.h"] + IMGUI_SOURCES
+# Le visualiseur utilise style.FontScaleDpi, apparu en 1.92.
+MIN_VERSION_NUM = 19200
 LIBS = ["d3d11.lib", "dxgi.lib", "d3dcompiler.lib", "user32.lib", "gdi32.lib", "dwmapi.lib"]
 EXE_NAME = "scry_viewer.exe"
 
@@ -76,21 +83,84 @@ def runtime_flags(cfg: Config) -> List[str]:
 
 
 # -- etapes ------------------------------------------------------------------
-def ensure_imgui(cfg: Config, log=print) -> Path:
+def auto_download(cfg: Config) -> bool:
+    return cfg.get_bool("viewer", "auto_download", False)
+
+
+def missing_files(directory: Path) -> List[str]:
+    return [rel for rel in REQUIRED_FILES if not (directory / rel).is_file()]
+
+
+def imgui_version(directory: Path) -> Optional[int]:
+    """IMGUI_VERSION_NUM lu dans imgui.h, 19291 pour 1.92.9."""
+    try:
+        text = (directory / "imgui.h").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r"#define\s+IMGUI_VERSION_NUM\s+(\d+)", text)
+    return int(match.group(1)) if match else None
+
+
+def manual_instructions(cfg: Config) -> str:
     directory = imgui_dir(cfg)
-    if (directory / "imgui.cpp").is_file():
+    tag = imgui_tag(cfg)
+    return (
+        "Sources de Dear ImGui absentes de %s\n"
+        "\n"
+        "Installation manuelle :\n"
+        "  1. telecharger Dear ImGui %s, ou plus recent (1.92 minimum) :\n"
+        "       https://github.com/ocornut/imgui/releases/tag/%s\n"
+        "     puis 'Source code (zip)' ;\n"
+        "  2. extraire l'archive et placer son CONTENU dans ce dossier, de sorte\n"
+        "     que ce fichier existe :\n"
+        "       %s\n"
+        "  3. relancer scry viewer.\n"
+        "\n"
+        "Fichiers utilises : %s\n"
+        "\n"
+        "Autres possibilites :\n"
+        "  - [viewer] imgui_dir dans scry.ini, vers un checkout existant ;\n"
+        "  - scry viewer --fetch-imgui (ou scry_viewer.bat --fetch-imgui) pour un\n"
+        "    git clone au tag %s ;\n"
+        "  - [viewer] auto_download = true pour ce clone a chaque fois qu'il manque."
+        % (directory, tag, tag, directory / "imgui.cpp", ", ".join(REQUIRED_FILES), tag))
+
+
+def _check_version(directory: Path) -> None:
+    version = imgui_version(directory)
+    if version is not None and version < MIN_VERSION_NUM:
+        raise ViewerError(
+            "Dear ImGui trop ancien dans %s (IMGUI_VERSION_NUM = %d) : 1.92 minimum, "
+            "le visualiseur utilise style.FontScaleDpi." % (directory, version))
+
+
+def ensure_imgui(cfg: Config, fetch: bool = False, log=print) -> Path:
+    """Dossier des sources ImGui, verifie. Ne telecharge que si fetch ou
+    [viewer] auto_download le demandent explicitement."""
+    directory = imgui_dir(cfg)
+    missing = missing_files(directory)
+    if not missing:
+        _check_version(directory)
         return directory
+
     if directory.exists() and any(directory.iterdir()):
-        raise ViewerError("%s existe mais ne contient pas imgui.cpp. Corriger "
-                          "[viewer] imgui_dir ou vider ce dossier." % directory)
+        raise ViewerError(
+            "%s existe mais il y manque : %s\n"
+            "Si l'archive a ete extraite dans un sous-dossier (imgui-1.92.9b par "
+            "exemple), remonter son contenu d'un niveau.\n\n%s"
+            % (directory, ", ".join(missing), manual_instructions(cfg)))
+
+    if not (fetch or auto_download(cfg)):
+        raise ViewerError(manual_instructions(cfg))
+
     tag = imgui_tag(cfg)
     log("[viewer] Clone de Dear ImGui %s dans %s" % (tag, directory))
     proc = subprocess.run(["git", "clone", "--depth", "1", "--branch", tag, IMGUI_REPO,
                            str(directory)], capture_output=True, text=True, errors="replace")
     if proc.returncode != 0:
-        raise ViewerError("Clone de Dear ImGui impossible :\n%s\nCloner a la main %s "
-                          "dans %s, ou renseigner [viewer] imgui_dir."
-                          % ((proc.stderr or proc.stdout).strip(), IMGUI_REPO, directory))
+        raise ViewerError("Clone de Dear ImGui impossible :\n%s\n\n%s"
+                          % ((proc.stderr or proc.stdout).strip(), manual_instructions(cfg)))
+    _check_version(directory)
     return directory
 
 
@@ -104,9 +174,9 @@ def _run(cmd: Sequence[str], cwd: Path) -> None:
 
 
 def build(structs: Sequence[model.Struct], cfg: Config, header=None,
-          log=print) -> Path:
+          log=print, fetch: bool = False) -> Path:
     """Genere, compile et lie. Retourne le chemin de l'executable."""
-    imgui = ensure_imgui(cfg, log)
+    imgui = ensure_imgui(cfg, fetch=fetch, log=log)
     generator.generate(list(structs), cfg, header=header)
     cl = str(msvc_env.prepare_cl(cfg))
 
