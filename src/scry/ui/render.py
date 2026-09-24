@@ -110,7 +110,10 @@ def _row(node, selection, source, visible, picked, depth):
     if imgui.is_item_clicked() and not _toggled_open():
         picked.append(node.id)
     if imgui.is_item_hovered() and node.field is not None and node.field.access_path:
-        imgui.set_tooltip(node.field.access_path)
+        tip = node.field.access_path
+        if node.field.doc:
+            tip += "\n\n" + node.field.doc
+        imgui.set_tooltip(tip)
 
     imgui.table_next_column()
     imgui.text(node.type_name)

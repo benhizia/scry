@@ -69,6 +69,9 @@ class Field:
     # "virtual" pour une base virtuelle, dont l'offset n'est pas constant
     truncated: str = ""
 
+    # Commentaire de documentation relu dans le header, '' si aucun.
+    doc: str = ""
+
     children: List["Field"] = dc_field(default_factory=list)
 
     @property
@@ -120,6 +123,7 @@ class Field:
             "is_polymorphic": self.is_polymorphic,
             "truncated": self.truncated,
             "is_readable": self.is_readable,
+            "doc": self.doc,
         }
         d["children"] = [c.to_dict() for c in self.children]
         return d
@@ -199,6 +203,7 @@ class Struct:
     # n'est defini hors du header. Faux, le visualiseur natif ne tente pas de
     # construire d'instance, ce qui echouerait a l'edition des liens.
     inline_constructible: bool = True
+    doc: str = ""
     fields: List[Field] = dc_field(default_factory=list)
 
     def walk(self):
@@ -238,6 +243,7 @@ class Struct:
             "header": self.header,
             "is_polymorphic": self.is_polymorphic,
             "inline_constructible": self.inline_constructible,
+            "doc": self.doc,
             "padding": self.padding_bytes(),
             "fields": [f.to_dict() for f in self.fields],
         }

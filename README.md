@@ -126,7 +126,9 @@ Fonctionnel et validé de bout en bout :
 - configuration centralisée, aucun chemin en dur dans le code ;
 - héritage : chaque base est un nœud à son offset réel, membres hérités en
   enfants, héritage multiple et bases vides compris, bases virtuelles
-  signalées.
+  signalées ;
+- commentaires de documentation des membres et des structures, relus dans le
+  header (voir plus bas).
 
 Le C++ généré a été compilé avec `-std=c++17 -Wall -Wextra` : il compile sans
 avertissement et les `static_assert` passent contre le layout réel du
@@ -169,6 +171,7 @@ src/
       introspect.py         pygccxml -> modèle. Seul module qui importe pygccxml.
       msvc_env.py           détection de Visual Studio, chargement de vcvars
       castxml_bases.py      offsets des classes de base, que pygccxml ne lit pas
+      comments.py           commentaires de documentation relus dans le source
     codegen/
       generator.py          contexte Jinja et écriture du header généré
       templates/
@@ -344,6 +347,31 @@ seul le destructeur est virtuel, cas courant. Tester `calldef_t`.
 
 **`pygccxml` 2.x a renommé `variable_t.type` en `decl_type`.** Beaucoup
 d'exemples en ligne utilisent encore l'ancienne API.
+
+### Commentaires de documentation
+
+Chaque `Struct` et chaque `Field` porte un `doc`, affiché par `scry dump`,
+l'inspecteur, l'infobulle du tree-table, l'export JSON et, en infobulle
+aussi, le visualiseur C++ natif.
+
+castxml sait rapporter les commentaires, mais seulement les commentaires
+Doxygen attachés par clang (`///`, `///<`, `/** */`), et un seul par
+déclaration : un `///` placé avant un membre qui porte aussi un `///<` est
+perdu. Les headers tiers documentent surtout avec de simples `//`. Scry relit
+donc le source à la ligne que castxml donne pour chaque déclaration
+(`parsing/comments.py`, sans pygccxml, testé sur des chaînes) :
+
+- le bloc de commentaires collé au-dessus, sans ligne vide, en `//` ou
+  `/* */` ;
+- le commentaire de fin de ligne, même poursuivi sur plusieurs lignes.
+
+Les deux sont concaténés. Un `//` dans une chaîne d'initialisation n'ouvre pas
+de commentaire, et un `///<` seul sur sa ligne n'est pas attribué au membre
+suivant. `[introspection] comments = false` désactive la lecture.
+
+Approche reprise d'InterfaceInspector, qui passait par Doxygen après avoir
+réécrit les commentaires du header dans une copie temporaire. Ici ni Doxygen ni
+réécriture : la position donnée par castxml suffit.
 
 ### Piège castxml
 

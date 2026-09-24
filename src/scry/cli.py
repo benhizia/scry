@@ -71,10 +71,14 @@ def cmd_dump(args, cfg):
         print("=== %s  %s  sizeof=%s  alignof=%s  padding=%s%s"
               % (s.name, s.kind, s.size, s.align, s.padding_bytes(),
                  "  polymorphe" if s.is_polymorphic else ""))
+        if s.doc:
+            print("    // %s" % s.doc)
         if args.verbose and s.header:
             print("    %s" % s.header)
         for field, depth in s.walk():
             note = ("  [%s]" % field.truncated) if field.truncated else ""
+            if field.doc:
+                note += "  // %s" % field.doc
             print("  %s%-24s %-24s %-12s @%-5s %s o%s"
                   % ("  " * depth, field.label(), field.type_name, field.kind,
                      field.abs_offset, field.size, note))
