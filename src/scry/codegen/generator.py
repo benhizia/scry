@@ -205,6 +205,11 @@ def _templates_dir() -> str:
 def render(structs: List[model.Struct], cfg: Optional[Config] = None,
            template_name: str = "introspection.h.j2", header: Optional[str] = None) -> str:
     cfg = cfg or load_config()
+    return render_template(template_name, build_context(structs, cfg, header))
+
+
+def render_template(template_name: str, context: Dict) -> str:
+    """Rend un template du paquet avec un contexte deja construit."""
     env = Environment(
         loader=FileSystemLoader(_templates_dir()),
         undefined=StrictUndefined,
@@ -218,8 +223,7 @@ def render(structs: List[model.Struct], cfg: Optional[Config] = None,
     # Commentaire C++ d'une ligne : un antislash final prolongerait le
     # commentaire sur la ligne suivante du code genere.
     env.filters["ccomment"] = lambda s: " ".join(str(s).split()).rstrip("\\ ")
-    template = env.get_template(template_name)
-    return template.render(**build_context(structs, cfg, header))
+    return env.get_template(template_name).render(**context)
 
 
 def _write(cfg: Config, name: str, text: str) -> str:

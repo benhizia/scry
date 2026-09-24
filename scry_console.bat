@@ -134,6 +134,8 @@ echo   scry gen                    ecrit Generated\introspection.generated.h
 echo   scry json modele.json       exporte le modele brut
 echo   scry ui                     visualiseur ImGui
 echo   scry verify                 compile les assertions ABI avec cl, release et debug
+echo   scry producer --run         publie le motif de demo en memoire partagee
+echo   scry watch                  affiche en continu les valeurs publiees
 echo   scry --help                 toutes les options
 echo.
 echo   tests                       lance les tests, arguments pour pytest

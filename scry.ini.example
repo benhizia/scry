@@ -115,6 +115,16 @@ auto_download = false
 ; Executable et objets.
 build_dir = build/viewer
 
+[shm]
+; Canal de memoire partagee : 'scry producer', 'scry watch', les deux IHM.
+; Nom du segment, sans '/'. Sous POSIX il devient /scry_demo dans /dev/shm,
+; sous Windows un mapping de fichier nomme.
+name = scry_demo
+; Executable du producteur de demonstration.
+build_dir = build/producer
+; Compilateur du producteur hors MSVC. Vide = g++ pour gcc, clang++ pour clang.
+cxx =
+
 [verify]
 ; Profils de build contre lesquels 'scry verify' compile les assertions ABI,
 ; separes par des ;  Format 'nom: options de cl'. Reprendre les options de la

@@ -177,6 +177,9 @@ def build(structs: Sequence[model.Struct], cfg: Config, header=None,
     """Genere, compile et lie. Retourne le chemin de l'executable."""
     imgui = ensure_imgui(cfg, fetch=fetch, log=log)
     generator.generate(list(structs), cfg, header=header)
+    # Protocole de memoire partagee, inclus par le visualiseur.
+    from scry import producer
+    producer.copy_protocol_header(cfg)
     cl = str(msvc_env.prepare_cl(cfg))
 
     flags = runtime_flags(cfg)
@@ -202,6 +205,7 @@ def build(structs: Sequence[model.Struct], cfg: Config, header=None,
     includes = imgui_inc + ["/I%s" % d for d in verify.include_dirs(structs, cfg)]
     log("[viewer] Compilation du visualiseur (%s)" % " ".join(flags))
     _run(common + includes + ["/DSCRY_NS=%s" % cfg.cpp_namespace,
+                              '/DSCRY_SHM_NAME="%s"' % producer.segment_name(cfg),
                               str(viewer_source()), "/Fo%s\\" % obj_dir, "/Fe%s" % exe]
          + [str(o) for o in imgui_objs]
          + ["/link", "/SUBSYSTEM:WINDOWS", "/ENTRY:mainCRTStartup"] + LIBS, obj_dir)

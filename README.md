@@ -96,6 +96,8 @@ scry diff ref.json       compare au modèle de référence, code 1 si l'ABI a ch
 scry ui                  visualiseur ImGui
 scry verify              compile les assertions ABI (cl, g++ ou clang++), pour chaque profil de build
 scry viewer --run        compile et lance le visualiseur C++ natif (ImGui, DirectX 11)
+scry producer --run      compile et lance le producteur de démo en mémoire partagée
+scry watch               affiche en continu les valeurs publiées dans un canal
 ```
 
 Options communes : `-H / --header` cible un autre header, `-c / --config` un
@@ -135,9 +137,14 @@ Le C++ généré a été compilé avec `-std=c++17 -Wall -Wextra` : il compile s
 avertissement et les `static_assert` passent contre le layout réel du
 compilateur.
 
-Non fait à ce stade : la lecture live réelle depuis une mémoire partagée
-alimentée par un producteur C++, l'édition des valeurs, le filtrage des
-namespaces, et la comparaison d'ABI entre deux versions d'un header.
+Lecture live : un producteur C++ publie dans un canal de mémoire partagée
+(protocole seqlock, `scry_shm.h`), et `scry watch`, l'IHM Python et le
+visualiseur natif le décodent par offset. Voir § 7 ter.
+
+Comparaison d'ABI entre deux livraisons d'un header : `scry diff`, voir
+§ 7 bis.
+
+Non fait à ce stade : l'édition des valeurs et le filtrage des namespaces.
 
 ---
 
@@ -178,8 +185,12 @@ src/
       generator.py          contexte Jinja et écriture du header généré
       templates/
         introspection.h.j2  template du C++ d'introspection
+    producer.py             producteur de démo en mémoire partagée : génération, compilation
     runtime/
       memory.py             décodage de valeurs depuis un buffer ou une SHM
+      scry_shm.h            protocole de mémoire partagée, côté C++ (seqlock)
+      shm.py                lecteur Python du même protocole
+      watch.py              scry watch : les valeurs d'un canal, en console
     ui/
       app.py                boucle ImGui
       tree.py               arbre d'affichage construit depuis le modèle
@@ -478,19 +489,63 @@ avec `--strict`. Les membres sont appariés par chemin d'accès (`obj.a.b`).
 
 ---
 
+## 7 ter. Lecture live en mémoire partagée
+
+```
+scry producer --run                        terminal 1 : publie
+scry watch                                 terminal 2 : affiche en continu
+scry ui          puis « mémoire partagée »  ou l'IHM Python
+scry viewer --run   puis « mémoire partagée »  ou le visualiseur natif (--shm)
+```
+
+**Le protocole** est dans `src/scry/runtime/scry_shm.h`, header C++17
+autonome, Windows et POSIX, copié dans `Generated/` à côté des headers
+générés. Un segment nommé contient un en-tête de 128 octets (magic `SCRY`,
+version, taille de la charge, compteur de séquence, horodatage, nom du type)
+suivi des octets bruts d'une instance. Le nom du type publié permet au lecteur
+de choisir la bonne structure, et sa taille de refuser un layout différent.
+
+**Seqlock.** L'écrivain rend la séquence impaire, copie, la rend paire. Le
+lecteur lit la séquence, copie, relit : impaire ou changée, la copie est
+déchirée et il recommence. Aucun verrou, l'écrivain n'attend jamais. Vérifié
+sous charge : producteur publiant sans pause, 300 lectures Python, aucune
+copie déchirée (`tests/test_shm.py`) ; même essai du chemin Win32, compilé
+avec mingw et exécuté sous wine.
+
+**Le producteur de démonstration** (`scry producer`) est généré depuis le
+modèle et inclut le header ABI : s'il compile, la charge a le layout annoncé.
+Il publie le motif de démo décalé à chaque tick, `(i * 7 + 3 + tick) % 251` :
+au tick 0, ce sont les octets du « motif de démo » des deux IHM. Une vraie
+application publie ses objets en deux lignes :
+
+```cpp
+#include "scry_shm.h"
+scry::shm::Publisher pub("scry_moteur", sizeof(Etat), "moteur::Etat");
+pub.publish(etat);   // à chaque mise à jour
+```
+
+**Lecteurs.** `scry.runtime.shm.ShmChannelSource` est une `MemorySource` :
+`refresh()` prend un instantané cohérent, `read()` lit toujours dans le
+dernier, pour que tous les membres affichés viennent de la même publication.
+Sous POSIX il ouvre le segment en lecture seule par `shm_open` et `mmap`, sans
+`multiprocessing.shared_memory` : avant Python 3.13, son `resource_tracker`
+détruit à la sortie du lecteur tout segment ouvert, sous les pieds du
+producteur. Le visualiseur natif utilise `scry::shm::Reader`, et retente la
+connexion deux fois par seconde si le producteur démarre après lui.
+
+Rappel : les octets publiés sont ceux de l'objet, pointeurs et vtable
+compris. Ils n'ont de sens que dans le processus producteur ; la lecture par
+offset reste valide, pas le déréférencement.
+
+---
+
 ## 8. Améliorations recommandées
 
 Par ordre de rapport valeur sur effort.
 
 ### Priorité haute
 
-**Boucler la démonstration live.** Écrire un petit producteur C++ qui publie une
-instance dans une mémoire partagée nommée, et brancher `SharedMemorySource`
-dessus. C'est la démonstration qui rend le projet convaincant, et toute
-l'infrastructure est déjà là. Point d'attention : la synchronisation. Une
-lecture pendant une écriture donne un état déchiré. Un compteur de séquence pair
-ou impair encadrant l'écriture, lu avant et après, suffit à détecter et rejeter
-une lecture incohérente sans verrou.
+**Boucler la démonstration live : fait.** Voir § 7 ter.
 
 **Filtrage des types.** Sur un header tiers réel, le nombre de déclarations est
 vite ingérable. Une UI de sélection par namespace et par motif de nom, dont le

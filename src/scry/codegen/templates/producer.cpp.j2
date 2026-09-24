@@ -1,0 +1,106 @@
+{#- Producteur de demonstration genere par Scry : 'scry producer'.
+
+     Publie, dans un canal de memoire partagee Scry, les octets d'une des
+     structures du modele. Il inclut le header ABI : s'il compile, sizeof et
+     offsets sont ceux que le modele annonce, et les lecteurs, 'scry watch',
+     l'IHM ou le visualiseur natif, decodent juste.
+-#}
+// =============================================================================
+//  Fichier genere par Scry. Ne pas editer a la main.
+//  Sources     : {{ source_headers | join(", ") }}
+//
+//  Producteur de demonstration. Il publie le motif de demo de Scry, decale a
+//  chaque tick pour que les valeurs bougent :
+//
+//      octet i = (i * 7 + 3 + tick) % 251
+//
+//  Au tick 0, ce sont exactement les octets du 'motif de demo' des deux IHM.
+//  Une vraie application publie ses objets avec scry::shm::Publisher, voir
+//  scry_shm.h.
+//
+//  Usage : scry_producer [--struct NOM] [--name SEGMENT] [--period MS]
+//                        [--count N] [--list]
+// =============================================================================
+#include "{{ abi_header }}"
+#include "scry_shm.h"
+
+#include <chrono>
+#include <csignal>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace {
+
+struct Entry
+{
+    const char* name;
+    std::size_t size;
+};
+
+const Entry kEntries[] = {
+{% for s in structs %}
+    {"{{ s.name | cstr }}", sizeof({{ s.name }})},
+{% endfor %}
+};
+
+volatile std::sig_atomic_t g_stop = 0;
+
+void on_signal(int) { g_stop = 1; }
+
+}  // namespace
+
+int main(int argc, char** argv)
+{
+    std::string wanted = kEntries[0].name;
+    std::string segment = "{{ segment }}";
+    long period_ms = 100;
+    long count = -1;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        const bool has_value = i + 1 < argc;
+        if (arg == "--struct" && has_value) wanted = argv[++i];
+        else if (arg == "--name" && has_value) segment = argv[++i];
+        else if (arg == "--period" && has_value) period_ms = std::stol(argv[++i]);
+        else if (arg == "--count" && has_value) count = std::stol(argv[++i]);
+        else if (arg == "--list") {
+            for (const Entry& e : kEntries) std::printf("%s  %zu o\n", e.name, e.size);
+            return 0;
+        } else {
+            std::fprintf(stderr, "option inconnue : %s\n", arg.c_str());
+            return 2;
+        }
+    }
+
+    const Entry* entry = nullptr;
+    for (const Entry& e : kEntries)
+        if (wanted == e.name) entry = &e;
+    if (entry == nullptr) {
+        std::fprintf(stderr, "structure inconnue : %s (--list pour la liste)\n", wanted.c_str());
+        return 2;
+    }
+
+    std::signal(SIGINT, on_signal);
+    std::signal(SIGTERM, on_signal);
+    try {
+        scry::shm::Publisher publisher(segment, entry->size, entry->name);
+        std::vector<std::uint8_t> bytes(entry->size);
+        std::printf("Publie %s (%zu o) dans '%s', toutes les %ld ms. Ctrl+C pour arreter.\n",
+                    entry->name, entry->size, segment.c_str(), period_ms);
+        std::fflush(stdout);
+        for (long tick = 0; !g_stop && (count < 0 || tick < count); ++tick) {
+            for (std::size_t i = 0; i < bytes.size(); ++i)
+                bytes[i] = static_cast<std::uint8_t>((i * 7 + 3 + static_cast<std::size_t>(tick)) % 251);
+            publisher.publish_bytes(bytes.data());
+            std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
+        }
+        std::printf("Arret apres %llu publication(s).\n",
+                    static_cast<unsigned long long>(publisher.sequence() / 2));
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "erreur : %s\n", e.what());
+        return 1;
+    }
+    return 0;
+}

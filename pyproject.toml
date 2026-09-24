@@ -43,6 +43,8 @@ where = ["src"]
 # seraient absents du wheel et la generation echouerait apres installation.
 [tool.setuptools.package-data]
 "scry.codegen" = ["templates/*.j2"]
+# Protocole de memoire partagee, a inclure par le producteur C++.
+"scry.runtime" = ["*.h"]
 # Source du visualiseur C++ natif, compile par 'scry viewer'.
 "scry.viewer" = ["*.cpp"]
 
