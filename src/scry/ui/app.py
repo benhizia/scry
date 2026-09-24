@@ -29,6 +29,7 @@ from scry.ui import tree as tree_mod
 
 MEMORY_NONE = "none"
 MEMORY_DEMO = "demo"
+MEMORY_SHM = "shm"
 
 ERROR_COLOR = (1.0, 0.45, 0.40, 1.0)
 PADDING_COLOR = (0.95, 0.60, 0.25, 1.0)
@@ -67,6 +68,11 @@ class AppState(object):
         self.filter = ""
         self._visible = (None, None, None)
         self.last_generated = ""
+        # Memoire partagee : canal ouvert, nom du segment, dernier incident.
+        from scry.producer import segment_name
+        self.shm_name = segment_name(self.cfg)
+        self.shm = None
+        self.shm_error = ""
         self.reload()
 
     # -- lecture ------------------------------------------------------------
@@ -124,9 +130,42 @@ class AppState(object):
             self.rebuild()
 
     def set_memory(self, mode):
+        if mode == MEMORY_SHM and not self.connect_shm():
+            return
+        if mode != MEMORY_SHM:
+            self.disconnect_shm()
         if mode != self.memory:
             self.memory = mode
             self.rebuild()
+
+    def connect_shm(self):
+        """Ouvre le canal et selectionne la structure qu'il annonce."""
+        from scry.runtime import shm
+        self.disconnect_shm()
+        try:
+            self.shm = shm.ShmChannelSource(self.shm_name)
+        except (shm.ShmError, ValueError, OSError) as exc:
+            self.shm_error = str(exc)
+            return False
+        self.shm_error = ""
+        names = [s.name for s in self.structs]
+        if self.shm.type_name in names:
+            self.select_struct(names.index(self.shm.type_name))
+        return True
+
+    def disconnect_shm(self):
+        if self.shm is not None:
+            self.shm.close()
+        self.shm = None
+
+    def tick(self):
+        """A chaque frame : nouvel instantane du canal."""
+        if self.memory == MEMORY_SHM and self.shm is not None:
+            self.shm.refresh()
+
+    def shm_matches(self, struct):
+        return (self.shm is not None and struct is not None
+                and struct.size == self.shm.payload_size)
 
     def rebuild(self):
         current = self.current
@@ -136,8 +175,14 @@ class AppState(object):
         self.tree = tree_mod.build_tree(current)
         if tree_mod.find(self.tree, self.selection) is None:
             self.selection = self.tree.id
-        self.source = (memory.BufferSource(memory.make_demo_buffer(current))
-                       if self.memory == MEMORY_DEMO else None)
+        if self.memory == MEMORY_DEMO:
+            self.source = memory.BufferSource(memory.make_demo_buffer(current))
+        elif self.memory == MEMORY_SHM and self.shm_matches(current):
+            # Une autre structure que celle publiee n'a pas la meme taille, ou
+            # pas le meme sens : on ne decode que si la taille correspond.
+            self.source = self.shm
+        else:
+            self.source = None
 
     def generate(self):
         try:
@@ -170,6 +215,25 @@ def _toolbar(state, width):
         imgui.set_tooltip("Buffer rempli par (i * 7 + 3) % 251, decode via les offsets.\n"
                           "Le visualiseur C++ (scry viewer) lit exactement les memes "
                           "octets :\nles valeurs des deux IHM doivent coincider.")
+    imgui.same_line()
+    if imgui.radio_button("memoire partagee", state.memory == MEMORY_SHM):
+        state.set_memory(MEMORY_SHM)
+    if imgui.is_item_hovered():
+        imgui.set_tooltip("Canal Scry publie par un processus C++ (scry producer, ou\n"
+                          "scry::shm::Publisher dans l'application). Relu a chaque frame.")
+    imgui.same_line()
+    imgui.push_item_width(120)
+    changed, name = imgui.input_text("##segment", state.shm_name, 64)
+    imgui.pop_item_width()
+    if changed:
+        state.shm_name = name
+        if state.memory == MEMORY_SHM:
+            state.set_memory(MEMORY_NONE)
+    if state.shm_error:
+        imgui.same_line()
+        imgui.text_colored("!", *ERROR_COLOR)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(state.shm_error)
 
     imgui.same_line()
     imgui.text_disabled("|")
@@ -269,14 +333,22 @@ def _status_bar(state):
     imgui.separator()
     parts = ["%d structure(s)" % len(state.structs),
              "%d header(s)" % len(state.files)]
-    if state.source is not None:
+    if state.memory == MEMORY_DEMO:
         parts.append("memoire : motif de demo")
+    elif state.memory == MEMORY_SHM and state.shm is not None:
+        if state.source is None:
+            parts.append("memoire : '%s' publie %s (%d o), pas cette structure"
+                         % (state.shm_name, state.shm.type_name, state.shm.payload_size))
+        else:
+            parts.append("memoire : '%s', publication %d"
+                         % (state.shm_name, state.shm.publications))
     if state.last_generated:
         parts.append("genere : %s" % state.last_generated)
     imgui.text_disabled("   |   ".join(parts))
 
 
 def draw(state):
+    state.tick()
     io = imgui.get_io()
     width, height = io.display_size
     imgui.set_next_window_position(0, 0)
@@ -336,6 +408,7 @@ def main(cfg=None, header=None):
             impl.render(imgui.get_draw_data())
             glfw.swap_buffers(window)
     finally:
+        state.disconnect_shm()
         impl.shutdown()
         glfw.terminate()
 

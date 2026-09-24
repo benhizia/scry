@@ -10,6 +10,8 @@ brancher Scry dans un build ou une CI.
     scry ui                          visualiseur ImGui
     scry verify                      compile les assertions ABI avec cl, par profil
     scry viewer --run                compile et lance le visualiseur C++ natif
+    scry producer --run              compile et lance le producteur en memoire partagee
+    scry watch                       affiche en continu les valeurs publiees
 
 Selection des headers, cumulables et acceptant les motifs glob :
 
@@ -105,6 +107,67 @@ def cmd_json(args, cfg):
     print("Ecrit : %s" % codegen.dump_json(structs, args.out))
     _print_report(introspector, args.verbose)
     return 1 if introspector.report.conflicts else 0
+
+
+def cmd_producer(args, cfg):
+    """Genere et compile le producteur de demonstration, et le lance au besoin."""
+    from scry import producer
+    introspector = Introspector(cfg)
+    structs = introspector.parse(args.header)
+    try:
+        exe = producer.build(structs, cfg, header=args.header)
+    except producer.ProducerError as exc:
+        print("[erreur] %s" % exc, file=sys.stderr)
+        return 1
+    print("Producteur : %s  (%d structures)" % (exe, len(structs)))
+    _print_report(introspector, args.verbose)
+    if not args.run:
+        print("Lancer : %s [--struct NOM] [--name %s]"
+              % (exe, producer.segment_name(cfg)))
+        return 0
+    import subprocess
+    cmd = [str(exe), "--name", args.name or producer.segment_name(cfg)]
+    if args.struct:
+        cmd += ["--struct", args.struct]
+    try:
+        return subprocess.call(cmd)
+    except KeyboardInterrupt:
+        return 0
+
+
+def cmd_watch(args, cfg):
+    """Affiche en continu les valeurs publiees dans un canal Scry."""
+    import time
+
+    from scry import producer
+    from scry.runtime import shm, watch
+    introspector = Introspector(cfg)
+    structs = introspector.parse(args.header)
+    name = args.name or producer.segment_name(cfg)
+    try:
+        source = shm.ShmChannelSource(name)
+    except shm.ShmError as exc:
+        print("[erreur] %s" % exc, file=sys.stderr)
+        return 1
+    try:
+        struct = watch.pick_struct(structs, source, args.struct)
+        while True:
+            source.refresh()
+            lines = watch.render(struct, source, name)
+            if not args.once:
+                sys.stdout.write("\x1b[H\x1b[2J")
+            print("\n".join(lines))
+            sys.stdout.flush()
+            if args.once:
+                return 0
+            time.sleep(args.interval)
+    except watch.WatchError as exc:
+        print("[erreur] %s" % exc, file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        source.close()
 
 
 def cmd_verify(args, cfg):
@@ -219,6 +282,19 @@ def main(argv=None):
     p_json = sub.add_parser("json", parents=[common], help="exporte le modele en JSON")
     p_json.add_argument("out", nargs="?", default="modele.json")
     sub.add_parser("ui", parents=[common], help="visualiseur ImGui")
+    p_prod = sub.add_parser("producer", parents=[common],
+                            help="compile le producteur de demonstration en memoire partagee")
+    p_prod.add_argument("--run", action="store_true", help="le lance apres compilation")
+    p_prod.add_argument("--struct", metavar="NOM", help="structure publiee, la premiere a defaut")
+    p_prod.add_argument("--name", metavar="SEGMENT", help="nom du segment, [shm] name a defaut")
+    p_watch = sub.add_parser("watch", parents=[common],
+                             help="affiche en continu un canal de memoire partagee")
+    p_watch.add_argument("--name", metavar="SEGMENT", help="nom du segment, [shm] name a defaut")
+    p_watch.add_argument("--struct", metavar="NOM",
+                         help="structure a decoder ; a defaut, celle annoncee par le segment")
+    p_watch.add_argument("--once", action="store_true", help="un seul instantane, puis quitte")
+    p_watch.add_argument("--interval", type=float, default=0.5, metavar="S",
+                         help="periode de rafraichissement en secondes")
     p_verify = sub.add_parser("verify", parents=[common],
                               help="compile les assertions ABI avec cl, par profil")
     p_verify.add_argument("-p", "--profile", action="append", metavar="NOM",
@@ -240,6 +316,7 @@ def main(argv=None):
 
     handlers = {"check": cmd_check, "dump": cmd_dump, "gen": cmd_gen,
                 "json": cmd_json, "ui": cmd_ui, "verify": cmd_verify,
+                "producer": cmd_producer, "watch": cmd_watch,
                 "viewer": cmd_viewer}
     handler = handlers.get(args.cmd)
     if handler is None:

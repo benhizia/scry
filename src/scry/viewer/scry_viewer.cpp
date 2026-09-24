@@ -6,12 +6,15 @@
 //  d'ABI du header genere sont passes : les offsets affiches sont ceux du
 //  compilateur, dans cette configuration de build.
 //
-//  Deux sources d'octets :
+//  Trois sources d'octets :
 //    - instance C++ : un objet construit par defaut, initialiseurs de membres
 //      compris. Indisponible pour un type abstrait ou non constructible ;
 //    - motif de demo : un buffer rempli par (i * 7 + 3) % 251, exactement les
 //      octets de scry.runtime.memory.make_demo_buffer. L'IHM Python en mode
-//      demo doit afficher les memes valeurs.
+//      demo doit afficher les memes valeurs ;
+//    - memoire partagee : un canal Scry (scry_shm.h) publie par un autre
+//      processus, 'scry producer' ou l'application elle-meme, relu a chaque
+//      frame par copie coherente (seqlock).
 //
 //  Compile par 'scry viewer' (scry/viewer/build.py), qui fournit les -I vers
 //  ImGui, ses backends, le dossier Generated et les headers sources.
@@ -20,6 +23,7 @@
 // =============================================================================
 
 #include "introspection.generated.h"
+#include "scry_shm.h"
 
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
@@ -35,6 +39,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <string>
 #include <vector>
 
 // Namespace du code genere, [codegen] namespace de scry.ini.
@@ -48,13 +54,54 @@ namespace gen = SCRY_NS;
 // -----------------------------------------------------------------------------
 namespace {
 
-enum class Source { Instance, Demo };
+enum class Source { Instance, Demo, Shm };
+
+// Nom du segment par defaut, [shm] name de scry.ini, passe par scry viewer.
+#ifndef SCRY_SHM_NAME
+#define SCRY_SHM_NAME "scry_demo"
+#endif
 
 struct ViewerState
 {
     std::size_t selected = 0;
     int source = 0;  // Source, en int pour ImGui::RadioButton
+
+    // Memoire partagee
+    char shm_name[64] = SCRY_SHM_NAME;
+    std::unique_ptr<scry::shm::Reader> reader;
+    std::vector<std::uint8_t> shm_bytes;
+    std::uint64_t shm_sequence = 0;
+    std::string shm_error;
+    double shm_retry_at = 0.0;
 };
+
+// Ouvre le canal au besoin, puis en prend une copie coherente. Un segment
+// absent est retente deux fois par seconde : le producteur peut demarrer
+// apres le visualiseur.
+void poll_shm(ViewerState& state)
+{
+    if (!state.reader) {
+        if (ImGui::GetTime() < state.shm_retry_at)
+            return;
+        state.shm_retry_at = ImGui::GetTime() + 0.5;
+        try {
+            state.reader = std::make_unique<scry::shm::Reader>(state.shm_name);
+        } catch (const std::exception& e) {
+            state.shm_error = e.what();
+            return;
+        }
+        state.shm_error.clear();
+        state.shm_bytes.assign(state.reader->payload_size(), 0);
+        state.shm_sequence = 0;
+        // Selectionne la structure que le segment annonce.
+        for (std::size_t k = 0; k < gen::kStructCount; ++k)
+            if (std::strcmp(gen::kStructs[k].name, state.reader->type_name()) == 0)
+                state.selected = k;
+    }
+    const std::uint64_t seq = state.reader->snapshot(state.shm_bytes.data());
+    if (seq != 0)
+        state.shm_sequence = seq;
+}
 
 // Meme motif que make_demo_buffer cote Python, un buffer par structure.
 const std::uint8_t* demo_buffer(std::size_t index)
@@ -130,9 +177,27 @@ void draw_members(ViewerState& state, float reserve)
     ImGui::TextDisabled("sizeof %zu   alignof %zu   padding %zu%s", info.size, info.align,
                         info.padding, info.polymorphic ? "   polymorphe" : "");
 
+    if (state.source == static_cast<int>(Source::Shm)) {
+        if (!state.reader) {
+            ImGui::TextColored(kPaddingColor, "Canal '%s' indisponible : %s", state.shm_name,
+                               state.shm_error.c_str());
+            return;
+        }
+        if (state.reader->payload_size() != info.size) {
+            ImGui::TextColored(kPaddingColor, "Le canal publie %s (%zu o), pas cette structure.",
+                               state.reader->type_name(), state.reader->payload_size());
+            return;
+        }
+        if (state.shm_sequence == 0) {
+            ImGui::TextDisabled("En attente d'une premiere publication...");
+            return;
+        }
+    }
     const std::uint8_t* base = state.source == static_cast<int>(Source::Instance)
                                    ? info.default_instance()
-                                   : demo_buffer(state.selected);
+                               : state.source == static_cast<int>(Source::Demo)
+                                   ? demo_buffer(state.selected)
+                                   : state.shm_bytes.data();
     if (base == nullptr) {
         ImGui::TextColored(kPaddingColor, "Type abstrait ou non constructible par defaut : "
                                           "passer en motif de demo.");
@@ -165,6 +230,29 @@ void draw_ui(ViewerState& state)
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Buffer rempli par (i * 7 + 3) %% 251 : les memes octets que\n"
                           "l'IHM Python en mode motif de demo.");
+    ImGui::SameLine();
+    const bool was_shm = state.source == static_cast<int>(Source::Shm);
+    ImGui::RadioButton("memoire partagee", &state.source, static_cast<int>(Source::Shm));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Canal Scry publie par un autre processus (scry producer, ou\n"
+                          "scry::shm::Publisher dans l'application), relu a chaque frame.");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::InputText("##segment", state.shm_name, sizeof(state.shm_name)))
+        state.reader.reset();  // nouveau nom : reconnexion
+    if (state.source == static_cast<int>(Source::Shm)) {
+        if (!was_shm)
+            state.shm_retry_at = 0.0;
+        poll_shm(state);
+        ImGui::SameLine();
+        if (state.reader)
+            ImGui::TextDisabled("publication %llu",
+                                static_cast<unsigned long long>(state.shm_sequence / 2));
+        else
+            ImGui::TextColored(kPaddingColor, "indisponible");
+    } else {
+        state.reader.reset();
+    }
     ImGui::SameLine();
     ImGui::TextDisabled("   |   ImGui %s   |   %s", IMGUI_VERSION, build_label());
     ImGui::Separator();
@@ -205,12 +293,19 @@ static void CreateRenderTarget();
 static void CleanupRenderTarget();
 static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-// Options : --demo demarre en motif de demo, --struct NOM sur une structure.
+// Options : --demo demarre en motif de demo, --shm [NOM] sur un canal de
+// memoire partagee, --struct NOM sur une structure.
 static void parse_args(int argc, char** argv, ViewerState& state)
 {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--demo") == 0) {
             state.source = static_cast<int>(Source::Demo);
+        } else if (std::strcmp(argv[i], "--shm") == 0) {
+            state.source = static_cast<int>(Source::Shm);
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                std::strncpy(state.shm_name, argv[++i], sizeof(state.shm_name) - 1);
+                state.shm_name[sizeof(state.shm_name) - 1] = '\0';
+            }
         } else if (std::strcmp(argv[i], "--struct") == 0 && i + 1 < argc) {
             const char* wanted = argv[++i];
             for (std::size_t k = 0; k < gen::kStructCount; ++k)
