@@ -93,3 +93,16 @@ def test_find_et_segments():
     assert tree.find(root, b.id) is b
     segs = [(start, end, n.label) for start, end, n in tree.top_level_segments(root)]
     assert segs == [(0, 2, "a"), (2, 4, "[padding 2 o]"), (4, 8, "b")]
+
+
+def test_base_polymorphe_et_base_virtuelle_dans_l_arbre():
+    poly = _f("", 0, 16, kind=model.BASE, type_name="Poly", is_polymorphic=True,
+              children=[_f("p", 8, 4)])
+    virt = _f("", 0, None, kind=model.BASE, type_name="VB", truncated="virtual")
+    s = model.Struct(name="D", size=24, is_polymorphic=True,
+                     fields=[poly, virt, _f("x", 16, 4)])
+    root = tree.build_tree(s)
+    labels = [n.label for n in root.children]
+    assert labels == ["(base) Poly", "(base virtuelle) VB", "x", "[padding 4 o]"]
+    assert [n.label for n in root.children[0].children] == ["[vptr 8 o]", "p", "[padding 4 o]"]
+    assert root.children[1].note == "base virtuelle"

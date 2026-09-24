@@ -25,8 +25,10 @@ POINTER = "pointer"
 ARRAY = "array"
 FUNCTION = "function"
 UNKNOWN = "unknown"
+# Sous-objet d'une classe de base : ses membres sont ses enfants.
+BASE = "base"
 
-AGGREGATES = (STRUCT, UNION, CLASS)
+AGGREGATES = (STRUCT, UNION, CLASS, BASE)
 
 
 @dataclass
@@ -56,8 +58,15 @@ class Field:
     is_static: bool = False
     is_anonymous: bool = False
     is_const: bool = False
+    # "public", "protected" ou "private". offsetof n'est permis, hors de la
+    # classe, que sur un membre public.
+    access: str = "public"
 
-    # Raison d'un arret de descente : "depth", "cycle", "opaque", "pointer"
+    # Agregat polymorphe : son offset 0 est un pointeur de vtable.
+    is_polymorphic: bool = False
+
+    # Raison d'un arret de descente : "depth", "cycle", "opaque", "pointer",
+    # "virtual" pour une base virtuelle, dont l'offset n'est pas constant
     truncated: str = ""
 
     children: List["Field"] = dc_field(default_factory=list)
@@ -80,6 +89,9 @@ class Field:
         )
 
     def label(self) -> str:
+        if self.kind == BASE:
+            return "(base%s) %s" % (" virtuelle" if self.truncated == "virtual" else "",
+                                    self.type_name)
         if self.is_bitfield:
             return "%s : %d" % (self.name, self.bit_width)
         if self.array_len is not None:
@@ -104,6 +116,8 @@ class Field:
             "is_static": self.is_static,
             "is_anonymous": self.is_anonymous,
             "is_const": self.is_const,
+            "access": self.access,
+            "is_polymorphic": self.is_polymorphic,
             "truncated": self.truncated,
             "is_readable": self.is_readable,
         }
@@ -180,6 +194,11 @@ class Struct:
     align: Optional[int] = None
     header: str = ""
     is_polymorphic: bool = False
+    # Constructible par defaut sans lier la bibliotheque du tiers : aucun
+    # constructeur par defaut, de la classe, de ses bases ou de ses membres,
+    # n'est defini hors du header. Faux, le visualiseur natif ne tente pas de
+    # construire d'instance, ce qui echouerait a l'edition des liens.
+    inline_constructible: bool = True
     fields: List[Field] = dc_field(default_factory=list)
 
     def walk(self):
@@ -218,6 +237,7 @@ class Struct:
             "align": self.align,
             "header": self.header,
             "is_polymorphic": self.is_polymorphic,
+            "inline_constructible": self.inline_constructible,
             "padding": self.padding_bytes(),
             "fields": [f.to_dict() for f in self.fields],
         }
@@ -237,8 +257,10 @@ PRINTF_FORMATS = {
     "unsigned int": ("%u", "{expr}"),
     "long int": ("%ld", "{expr}"),
     "long unsigned int": ("%lu", "{expr}"),
-    "long long int": ("%lld", "{expr}"),
-    "long long unsigned int": ("%llu", "{expr}"),
+    # Conversion explicite : sous Linux (LP64), uint64_t et size_t sont des
+    # unsigned long, pas des unsigned long long, et %llu n'y correspond pas.
+    "long long int": ("%lld", "static_cast<long long>({expr})"),
+    "long long unsigned int": ("%llu", "static_cast<unsigned long long>({expr})"),
     # %.6g comme scry.runtime.memory.decode : l'IHM Python et le visualiseur
     # C++ affichent ainsi les memes chaines pour les memes octets.
     "float": ("%.6g", "static_cast<double>({expr})"),

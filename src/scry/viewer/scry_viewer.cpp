@@ -108,8 +108,8 @@ void draw_structs(ViewerState& state, float reserve)
         if (ImGui::Selectable(label, state.selected == i, ImGuiSelectableFlags_SpanAllColumns))
             state.selected = i;
         if (ImGui::IsItemHovered() && info.default_instance() == nullptr)
-            ImGui::SetTooltip("Abstrait ou non constructible par defaut :\n"
-                              "seul le motif de demo est disponible.");
+            ImGui::SetTooltip("Abstrait, non constructible par defaut, ou constructeur\n"
+                              "defini hors du header : seul le motif de demo est disponible.");
         ImGui::PopID();
         ImGui::TableNextColumn();
         ImGui::Text("%zu", info.size);
@@ -134,8 +134,9 @@ void draw_members(ViewerState& state, float reserve)
                                    ? info.default_instance()
                                    : demo_buffer(state.selected);
     if (base == nullptr) {
-        ImGui::TextColored(kPaddingColor, "Type abstrait ou non constructible par defaut : "
-                                          "passer en motif de demo.");
+        ImGui::TextColored(kPaddingColor, "Type abstrait, non constructible par defaut, ou "
+                                          "constructeur defini hors du header : passer en "
+                                          "motif de demo.");
         return;
     }
     ImGui::BeginChild("membres", ImVec2(0.0f, -reserve));

@@ -8,7 +8,7 @@ brancher Scry dans un build ou une CI.
     scry gen                         ecrit le header C++ d'introspection
     scry json modele.json            exporte le modele brut
     scry ui                          visualiseur ImGui
-    scry verify                      compile les assertions ABI avec cl, par profil
+    scry verify                      compile les assertions ABI (cl, g++, clang++), par profil
     scry viewer --run                compile et lance le visualiseur C++ natif
 
 Selection des headers, cumulables et acceptant les motifs glob :
@@ -108,11 +108,7 @@ def cmd_json(args, cfg):
 
 
 def cmd_verify(args, cfg):
-    """Compile les assertions ABI avec cl, pour chaque profil de build."""
-    if cfg.compiler != "msvc":
-        print("[erreur] scry verify ne sait compiler qu'avec MSVC (compiler = %s)."
-              % cfg.compiler, file=sys.stderr)
-        return 1
+    """Compile les assertions ABI avec cl, g++ ou clang++, pour chaque profil."""
     from scry import verify
 
     profiles = verify.load_profiles(cfg)
@@ -128,7 +124,10 @@ def cmd_verify(args, cfg):
     structs = introspector.parse(args.header)
     abi_path, results = verify.run(structs, cfg, profiles, header=args.header)
 
-    print("Modele castxml : cl_flags = %s" % (cfg.cl_flags or "aucune, build release"))
+    if verify.is_msvc(cfg):
+        print("Modele castxml : cl_flags = %s" % (cfg.cl_flags or "aucune, build release"))
+    else:
+        print("Modele castxml : %s, compile avec %s" % (cfg.compiler, verify.compiler_label(cfg)))
     print("Header ABI     : %s  (%d structures)" % (abi_path, len(structs)))
     print()
     for r in results:
@@ -147,7 +146,8 @@ def cmd_verify(args, cfg):
     if failed:
         print()
         print("Le modele ne correspond pas aux profils : %s. Regler [castxml] "
-              "cl_flags et defines sur la configuration visee." % ", ".join(failed))
+              "%s et defines sur la configuration visee."
+              % (", ".join(failed), "cl_flags" if verify.is_msvc(cfg) else "extra_cflags"))
     return 1 if failed or introspector.report.conflicts else 0
 
 
@@ -220,7 +220,7 @@ def main(argv=None):
     p_json.add_argument("out", nargs="?", default="modele.json")
     sub.add_parser("ui", parents=[common], help="visualiseur ImGui")
     p_verify = sub.add_parser("verify", parents=[common],
-                              help="compile les assertions ABI avec cl, par profil")
+                              help="compile les assertions ABI (cl, g++, clang++), par profil")
     p_verify.add_argument("-p", "--profile", action="append", metavar="NOM",
                           help="ne verifier que ce profil, cumulable")
     p_viewer = sub.add_parser("viewer", parents=[common],

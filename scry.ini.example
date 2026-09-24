@@ -71,6 +71,9 @@ follow_pointers = false
 include_non_public = false
 ; Inclure les membres statiques. Ils n'ont pas d'offset utilisable.
 include_static = false
+; Descendre dans les classes de base : un noeud par base, a son offset, avec
+; les membres herites. Les bases virtuelles sont signalees sans etre placees.
+include_bases = true
 
 ; Motifs de fichiers dont les types sont retenus comme racines, en plus des
 ; headers explicitement parses. Sert a remonter les types definis dans un
@@ -87,6 +90,8 @@ stop_on_error = false
 namespace = scry
 ; Emettre le header d'assertions ABI (sizeof, alignof, offsetof).
 emit_abi_checks = true
+; Verifier aussi offsetof(Derivee, membre_herite) : valide l'offset des bases.
+abi_inherited = true
 ; Noms des headers generes dans [paths] output. Le header ABI ne depend de
 ; rien : c'est lui qu'il faut inclure dans le build de l'appli cible.
 output_header = introspection.generated.h
@@ -111,3 +116,11 @@ build_dir = build/viewer
 ; separes par des ;  Format 'nom: options de cl'. Reprendre les options de la
 ; cible qui touchent au layout : runtime (/MD, /MDd), /Zp, macros /D.
 profiles = release: /MD; debug: /MDd
+
+; Pendant de 'profiles' pour [castxml] compiler = gcc ou clang : 'scry verify'
+; compile alors avec g++ ou clang++ en -fsyntax-only. Cle distincte pour qu'un
+; meme scry.ini serve sous Windows et en CI Linux. -D_GLIBCXX_DEBUG est le
+; pendant de /MDd : la STL de debug de libstdc++ grossit les conteneurs.
+gnu_profiles = release: -O2; debug: -D_GLIBCXX_DEBUG
+; Compilateur des profils gnu. Vide = g++ pour gcc, clang++ pour clang.
+cxx =

@@ -59,7 +59,7 @@ def field_context(fld: model.Field) -> Dict:
     # Lignes du tree-table : membres et trous de padding, dans l'ordre des
     # offsets, comme dans l'IHM Python.
     ctx["rows"] = _rows(fld.children, fld.size, fld.abs_offset,
-                        with_holes=model.shows_holes(fld))
+                        with_holes=model.shows_holes(fld), vptr=fld.is_polymorphic)
     ctx["children"] = [r for r in ctx["rows"] if r["kind"] != "padding"]
     return ctx
 
@@ -70,6 +70,7 @@ _KIND_COLORS = {
     model.POINTER: "kColorPointer",
     model.ARRAY: "kColorArray",
     model.UNION: "kColorUnion",
+    model.BASE: "kColorBase",
 }
 
 
@@ -90,14 +91,44 @@ def _rows(fields, size, base_abs: int, with_holes: bool, vptr: bool = False) -> 
     return out
 
 
+def _checkable(f: model.Field) -> bool:
+    return (bool(f.name) and not f.is_static and not f.is_bitfield and not f.is_anonymous
+            and f.access == "public" and f.kind != model.BASE)
+
+
+def _offsetof_targets(fields, inherited: bool = True):
+    """(membre, offset absolu) verifiables par offsetof sur la racine.
+
+    Les membres publics des bases publiques non virtuelles sont compris :
+    offsetof(Derivee, membre_herite) donne l'offset du membre dans la
+    derivee, et verifie donc au passage l'offset de la base. Un nom present
+    deux fois, masque par la derivee ou herite de deux bases, est ambigu :
+    on l'ecarte.
+    """
+    found = []
+
+    def visit(level):
+        for f in level:
+            if f.kind == model.BASE:
+                if inherited and f.access == "public" and not f.truncated:
+                    visit(f.children)
+            elif _checkable(f):
+                found.append((f.name, f.abs_offset))
+
+    visit(fields)
+    names = [name for name, _ in found]
+    return [(name, offset) for name, offset in found if names.count(name) == 1]
+
+
 def struct_context(struct_info: model.Struct, cfg: Config) -> Dict:
     # offsetof n'est fiable que sur les membres de premier niveau non statiques
-    # et non champs de bits : on ne genere des assertions que pour ceux-la.
-    checks = [
-        {"member": f.name, "offset": f.abs_offset}
-        for f in struct_info.fields
-        if f.name and not f.is_static and not f.is_bitfield and not f.is_anonymous
-    ]
+    # et non champs de bits, et n'est permis hors de la classe que sur un
+    # membre public : on ne genere des assertions que pour ceux-la. Les
+    # membres non publics restent couverts par sizeof et par les offsets des
+    # membres publics qui les suivent.
+    checks = [{"member": name, "offset": offset}
+              for name, offset in _offsetof_targets(
+                  struct_info.fields, cfg.get_bool("codegen", "abi_inherited", True))]
 
     return {
         "name": struct_info.name,
@@ -110,6 +141,7 @@ def struct_context(struct_info: model.Struct, cfg: Config) -> Dict:
         "align": struct_info.align,
         "padding": struct_info.padding_bytes(),
         "is_polymorphic": struct_info.is_polymorphic,
+        "inline_constructible": struct_info.inline_constructible,
         "abi_checks": checks,
         "fields": [field_context(f) for f in struct_info.fields],
         "rows": _rows(struct_info.fields, struct_info.size, 0, with_holes=True,

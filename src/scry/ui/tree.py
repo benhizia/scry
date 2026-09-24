@@ -95,6 +95,8 @@ TRUNCATION_NOTES = {
     "depth": "profondeur max",
     "pointer": "pointeur non suivi",
     "opaque": "type incomplet",
+    "virtual": "base virtuelle",
+    "offset": "offset inconnu",
 }
 
 
@@ -109,7 +111,7 @@ def _add_members(parent: TreeNode, fields: List[model.Field], base_abs: int,
             continue
         node = parent.add(TreeNode(fld.label(), field=fld))
         _add_members(node, fld.children, fld.abs_offset, fld.size,
-                     with_holes=model.shows_holes(fld))
+                     with_holes=model.shows_holes(fld), polymorphic=fld.is_polymorphic)
 
 
 def build_tree(struct_info: model.Struct) -> TreeNode:

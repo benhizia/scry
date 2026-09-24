@@ -93,7 +93,7 @@ scry dump                affiche l'arbre avec offsets et tailles
 scry gen                 écrit Generated/introspection.generated.h et abi_checks.generated.h
 scry json modele.json    exporte le modèle brut
 scry ui                  visualiseur ImGui
-scry verify              compile les assertions ABI avec cl, pour chaque profil de build
+scry verify              compile les assertions ABI (cl, g++ ou clang++), pour chaque profil de build
 scry viewer --run        compile et lance le visualiseur C++ natif (ImGui, DirectX 11)
 ```
 
@@ -123,7 +123,10 @@ Fonctionnel et validé de bout en bout :
 - visualiseur ImGui arbre + tableau, avec colonne de valeurs décodées ;
 - génération d'un header C++ d'introspection, avec assertions d'ABI ;
 - CLI sans OpenGL pour le debug et l'intégration en CI ;
-- configuration centralisée, aucun chemin en dur dans le code.
+- configuration centralisée, aucun chemin en dur dans le code ;
+- héritage : chaque base est un nœud à son offset réel, membres hérités en
+  enfants, héritage multiple et bases vides compris, bases virtuelles
+  signalées.
 
 Le C++ généré a été compilé avec `-std=c++17 -Wall -Wextra` : il compile sans
 avertissement et les `static_assert` passent contre le layout réel du
@@ -150,8 +153,11 @@ scry.ini                    paramétrage local, non versionné
 README.md
 DEVELOPPEMENT.md            environnement Python, packaging, publication
 Data/                       headers d'essai
+Data/corpus/                corpus rejoué par tests/test_corpus.py, voir son README
 Generated/                  sortie, non versionnée
-tests/                      tests du modèle, sans castxml ni MSVC
+tests/                      tests du modèle, sans castxml ni MSVC, plus
+                            test_corpus.py et test_verify_reel.py qui sautent
+                            sans castxml ni g++
 src/
   scry/
     __init__.py
@@ -162,6 +168,7 @@ src/
     parsing/
       introspect.py         pygccxml -> modèle. Seul module qui importe pygccxml.
       msvc_env.py           détection de Visual Studio, chargement de vcvars
+      castxml_bases.py      offsets des classes de base, que pygccxml ne lit pas
     codegen/
       generator.py          contexte Jinja et écriture du header généré
       templates/
@@ -197,6 +204,23 @@ Conséquence pratique pour qui reprend le projet : **toute correction liée au
 parsing va dans `parsing/introspect.py`, jamais ailleurs**. Si un autre module a
 besoin d'importer pygccxml, c'est le signe que le modèle est incomplet et qu'il
 faut l'enrichir plutôt que contourner.
+
+### Héritage
+
+Chaque classe de base publique non vide devient un `Field` de nature `base`,
+placé à son offset réel dans la dérivée, ses membres en enfants. Les membres
+hérités gardent le chemin de la dérivée (`obj.membre`), comme en C++. Une
+base vide est omise (optimisation de base vide : 0 octet). Une base
+virtuelle est signalée sans être placée, son offset n'étant pas constant.
+Une base polymorphe affiche son `vptr` à son propre offset 0.
+
+Le header ABI vérifie aussi `offsetof(Dérivée, membre_hérité)` pour les
+membres publics des bases publiques non virtuelles, ce qui valide l'offset de
+chaque base contre le compilateur. Un nom masqué ou hérité deux fois est
+écarté comme ambigu. `[codegen] abi_inherited = false` retire ces assertions,
+par exemple si un compilateur les refusait.
+
+`[introspection] include_bases = false` revient à l'ancien comportement.
 
 ### Invariant qui prépare la suite
 
@@ -305,6 +329,19 @@ instanciation explicite dans le header d'essai les rend visibles.
 
 **Les structures auto-référençantes bouclent** sans garde-fou.
 
+**`cls.bases` ne donne ni l'offset des bases ni leur caractère virtuel.**
+`is_virtual` vaut toujours `False`. castxml écrit pourtant ces informations dans
+des éléments `<Base type=… virtual=… offset=…>`, que pygccxml ne lit pas.
+`parsing/castxml_bases.py` enveloppe le scanner SAX de pygccxml pour les
+recueillir. Silencieux : sans cela, les membres hérités seraient mal placés.
+
+**`declarations.is_class()` répond vrai sur un pointeur vers une classe.**
+Tester `is_pointer()` d'abord.
+
+**Un destructeur virtuel n'est pas un `member_function_t`.** Chercher les
+méthodes virtuelles parmi les seuls `member_function_t` rate les types dont
+seul le destructeur est virtuel, cas courant. Tester `calldef_t`.
+
 **`pygccxml` 2.x a renommé `variable_t.type` en `decl_type`.** Beaucoup
 d'exemples en ligne utilisent encore l'ancienne API.
 
@@ -357,6 +394,19 @@ Le layout dépend donc de ce que voit le préprocesseur, pas de l'optimisation :
 `/MDd` par exemple, pour que castxml voie les mêmes macros. `scry verify`
 compile ensuite `abi_checks.generated.h` avec le vrai `cl`, pour chaque profil
 de `[verify] profiles`, et dit pour quelles configurations le modèle tient.
+
+Hors Windows, avec `[castxml] compiler = gcc` ou `clang`, `scry verify` passe
+par `g++` ou `clang++` en `-fsyntax-only` (`[verify] cxx` pour en forcer un),
+avec les profils de `[verify] gnu_profiles`. Le pendant de `/MDd` y est
+`-D_GLIBCXX_DEBUG`, qui grossit les conteneurs de libstdc++ exactement de la
+même façon : le profil `debug` par défaut échoue tant que castxml n'a pas vu
+la macro (`[castxml] extra_cflags`). C'est ce qui rend la vérification d'ABI
+possible en CI Linux, avec `pip install castxml`.
+
+| Profil gnu par défaut | Options | Effet sur le layout |
+|---|---|---|
+| `release` | `-O2` | aucun |
+| `debug` | `-D_GLIBCXX_DEBUG` | `vector`, `string`, `map`, `optional`… grossissent |
 
 **`introspection.generated.h` : le rendu ImGui.** Il inclut le header ABI.
 
@@ -430,10 +480,10 @@ offsets viennent de castxml, donc ils suivent l'ABI de la cible. Le standard ne
 normalise pas l'ordre d'allocation. Vérifier sur un cas réel avant de s'appuyer
 dessus en production.
 
-**Héritage.** Le modèle ne descend pas dans les classes de base. Pour un header
-tiers utilisant l'héritage, les membres hérités manquent. `class_t.bases` donne
-les bases et leur offset ; l'ajout est mécanique mais demande de traiter
-l'héritage virtuel, où l'offset n'est pas constant.
+**Bases virtuelles.** L'héritage est géré (voir § 6), mais une base virtuelle
+est seulement signalée : son offset dépend du type le plus dérivé et castxml ne
+le donne pas. Pour un objet complet il est pourtant fixe ; on pourrait le
+retrouver en compilant `static_cast<VBase*>(&obj)` sur une instance.
 
 **Types polymorphes.** Ils sont détectés et signalés dans l'UI et le C++ généré.
 Le pointeur de vtable occupe le début de l'objet, les offsets en tiennent

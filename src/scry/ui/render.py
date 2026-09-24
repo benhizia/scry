@@ -30,6 +30,7 @@ KIND_COLORS = {
     model.STRUCT: (0.85, 0.85, 0.85, 1.0),
     model.UNION: (0.95, 0.70, 0.95, 1.0),
     model.CLASS: (0.85, 0.85, 0.85, 1.0),
+    model.BASE: (0.65, 0.80, 0.90, 1.0),
     tree_mod.PADDING: (0.95, 0.60, 0.25, 0.85),
 }
 DEFAULT_COLOR = (0.85, 0.85, 0.85, 1.0)

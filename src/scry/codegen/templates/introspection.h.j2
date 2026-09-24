@@ -24,13 +24,16 @@
 #include <type_traits>
 
 #include "imgui.h"
+{% if emit_abi_checks %}
+// Assertions sizeof / alignof / offsetof : si ce header compile, les offsets
+// utilises ci-dessous sont ceux de cette configuration de build. Il inclut
+// les headers sources : les inclure aussi ici redefinirait les types d'un
+// header tiers depourvu de garde d'inclusion.
+#include "{{ abi_header }}"
+{% else %}
 {% for h in source_headers %}
 #include "{{ h }}"
 {% endfor %}
-{% if emit_abi_checks %}
-// Assertions sizeof / alignof / offsetof : si ce header compile, les offsets
-// utilises ci-dessous sont ceux de cette configuration de build.
-#include "{{ abi_header }}"
 {% endif %}
 
 namespace {{ namespace }} {
@@ -87,6 +90,7 @@ constexpr ImU32 kColorEnum        = IM_COL32(242, 204, 128, 255);
 constexpr ImU32 kColorPointer     = IM_COL32(230, 153, 153, 255);
 constexpr ImU32 kColorArray       = IM_COL32(179, 230, 179, 255);
 constexpr ImU32 kColorUnion       = IM_COL32(242, 179, 242, 255);
+constexpr ImU32 kColorBase        = IM_COL32(166, 204, 230, 255);
 constexpr ImU32 kColorPadding     = IM_COL32(242, 153, 64, 220);
 
 inline bool begin_members_table(const char* id)
@@ -146,7 +150,7 @@ detail::row("{{ f.label }}##pad{{ f.abs_offset }}", "", {{ absx }}, {{ f.size }}
 {% elif f.is_static %}
 detail::row("{{ f.label | cstr }}", "{{ f.type | cstr }}", 0, 0, detail::RowKind::Leaf, detail::kColorDefault);
 ImGui::TextDisabled("statique, hors instance");
-{% elif f.truncated in ('cycle', 'depth', 'opaque') %}
+{% elif f.truncated in ('cycle', 'depth', 'opaque', 'virtual', 'offset') %}
 detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Leaf, {{ f.color }});
 ImGui::TextDisabled("[{{ f.truncated }}]");
 {% elif f.is_char_array %}
@@ -183,6 +187,7 @@ if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}
 {% elif f.rows %}
 if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Aggregate, {{ f.color }})) {
     const std::uint8_t* {{ sub }} = {{ base }} + {{ f.offset }};
+    (void){{ sub }};  // inutilise si seul du padding est visible
 {% for child in f.rows %}
 {{ emit_item(child, sub, level + 1, extra) | indent(4, true) }}
 {% endfor %}
@@ -219,6 +224,7 @@ ImGui::Text("{{ f.printf_fmt }}", {{ f.printf_expr | replace('{expr}', 'read_at<
 // =============================================================================
 inline void {{ s.func }}_rows(const std::uint8_t* base)
 {
+    (void)base;  // inutilise pour une structure sans membre visible
 {% for f in s.rows %}
 {{ emit_item(f, 'base', 1, '') | indent(4, true) }}
 {% endfor %}
@@ -264,6 +270,14 @@ struct StructInfo
 
 namespace detail {
 
+// Pour un type dont un constructeur par defaut est defini hors du header,
+// dans la bibliotheque du tiers : le construire ici echouerait a l'edition
+// des liens (voir Struct.inline_constructible).
+inline const std::uint8_t* no_instance()
+{
+    return nullptr;
+}
+
 template <typename T>
 const std::uint8_t* default_instance()
 {
@@ -280,7 +294,7 @@ const std::uint8_t* default_instance()
 inline const StructInfo kStructs[] = {
 {% for s in structs %}
     {"{{ s.name | cstr }}", sizeof({{ s.name }}), alignof({{ s.name }}), {{ s.padding or 0 }}u, {{ 'true' if s.is_polymorphic else 'false' }},
-     static_cast<void (*)(const std::uint8_t*)>(&{{ s.func }}), &detail::default_instance<{{ s.name }}>},
+     static_cast<void (*)(const std::uint8_t*)>(&{{ s.func }}), {{ ('&detail::default_instance<' ~ s.name ~ '>') if s.inline_constructible else '&detail::no_instance' }}},
 {% endfor %}
 };
 

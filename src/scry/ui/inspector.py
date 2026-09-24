@@ -23,6 +23,9 @@ TRUNCATION_TEXT = {
     "depth": "profondeur maximale atteinte, voir [introspection] max_depth",
     "pointer": "pointeur non suivi, voir [introspection] follow_pointers",
     "opaque": "type incomplet : declare mais jamais defini, taille inconnue",
+    "virtual": "base virtuelle : son offset depend du type le plus derive et se lit "
+               "a l'execution dans la vtable, il n'est pas constant",
+    "offset": "offset de la base non fourni par castxml",
 }
 
 Facts = List[Tuple[str, str]]
@@ -137,8 +140,15 @@ def _field_facts(node: TreeNode, s: model.Struct, source: Optional[MemorySource]
 
     # offsetof : invalide sur un champ de bits. Un type template contient une
     # virgule qui couperait la macro : on passe alors par l'alias genere.
+    if f.access != "public":
+        out.append(("Acces", "%s : ni offsetof ni lecture par nom hors de la "
+                             "classe, seule la lecture par offset reste possible"
+                    % f.access))
+    if f.kind == model.BASE:
+        out.append(("Base", "sous-objet de %s : ses membres s'atteignent par le "
+                            "chemin de la classe derivee" % f.type_name))
     member = f.access_path.split(".", 1)[1] if "." in f.access_path else ""
-    if member and not f.is_bitfield:
+    if member and not f.is_bitfield and f.access == "public" and f.kind != model.BASE:
         target = s.name
         if "," in target:
             target = "%s::abi::abi_%s" % (namespace, _cpp_identifier(s.name))
