@@ -31,15 +31,22 @@ def test_source_headers_repli_sur_liste_h():
     assert generator.source_headers(structs, header=["Data/x.h", "Data/y.h"]) == ["x.h", "y.h"]
 
 
-def test_render_inclut_chaque_header_et_jamais_une_chaine_vide():
+def test_render_inclut_chaque_header_et_jamais_une_chaine_vide(tmp_path):
     structs = [
         model.Struct(name="A", size=4, align=4, header="Data/a.h"),
         model.Struct(name="B", size=4, align=4, header="Data/b.h"),
     ]
-    text = generator.render(structs, _cfg())
-    assert '#include "a.h"' in text
-    assert '#include "b.h"' in text
-    assert '#include ""' not in text
+    ini = tmp_path / "scry.ini"
+    ini.write_text("[codegen]\nemit_abi_checks = false\n", encoding="utf-8")
+    # Les sources sont incluses par le header ABI, ou directement par le
+    # header ImGui quand les assertions sont desactivees : jamais les deux,
+    # sans quoi un header tiers sans garde d'inclusion serait redefini.
+    abi = generator.render(structs, _cfg(), "abi_checks.h.j2")
+    for text in (abi, generator.render(structs, load_config(ini))):
+        assert '#include "a.h"' in text
+        assert '#include "b.h"' in text
+        assert '#include ""' not in text
+    assert '#include "a.h"' not in generator.render(structs, _cfg())
 
 
 # -- offsetof et templates ---------------------------------------------------

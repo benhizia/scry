@@ -237,8 +237,10 @@ PRINTF_FORMATS = {
     "unsigned int": ("%u", "{expr}"),
     "long int": ("%ld", "{expr}"),
     "long unsigned int": ("%lu", "{expr}"),
-    "long long int": ("%lld", "{expr}"),
-    "long long unsigned int": ("%llu", "{expr}"),
+    # Conversion explicite : sous Linux (LP64), uint64_t et size_t sont des
+    # unsigned long, pas des unsigned long long, et %llu n'y correspond pas.
+    "long long int": ("%lld", "static_cast<long long>({expr})"),
+    "long long unsigned int": ("%llu", "static_cast<unsigned long long>({expr})"),
     # %.6g comme scry.runtime.memory.decode : l'IHM Python et le visualiseur
     # C++ affichent ainsi les memes chaines pour les memes octets.
     "float": ("%.6g", "static_cast<double>({expr})"),

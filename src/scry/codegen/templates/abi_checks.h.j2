@@ -29,6 +29,14 @@
 #include "{{ h }}"
 {% endfor %}
 
+// offsetof sur un type qui n'est pas standard-layout (membres non publics,
+// bases, vtable) : gcc previent que c'est "conditionnellement supporte". Il
+// l'est chez gcc, clang et MSVC, et c'est precisement ce qu'on veut verifier.
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+#endif
+
 namespace {{ namespace }} {
 namespace abi {
 
@@ -51,3 +59,7 @@ static_assert(offsetof({{ s.alias }}, {{ c.member }}) == {{ c.offset }}u,
 {% endfor %}
 }  // namespace abi
 }  // namespace {{ namespace }}
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif

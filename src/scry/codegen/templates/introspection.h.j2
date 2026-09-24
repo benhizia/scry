@@ -24,13 +24,16 @@
 #include <type_traits>
 
 #include "imgui.h"
+{% if emit_abi_checks %}
+// Assertions sizeof / alignof / offsetof : si ce header compile, les offsets
+// utilises ci-dessous sont ceux de cette configuration de build. Il inclut
+// les headers sources : les inclure aussi ici redefinirait les types d'un
+// header tiers depourvu de garde d'inclusion.
+#include "{{ abi_header }}"
+{% else %}
 {% for h in source_headers %}
 #include "{{ h }}"
 {% endfor %}
-{% if emit_abi_checks %}
-// Assertions sizeof / alignof / offsetof : si ce header compile, les offsets
-// utilises ci-dessous sont ceux de cette configuration de build.
-#include "{{ abi_header }}"
 {% endif %}
 
 namespace {{ namespace }} {

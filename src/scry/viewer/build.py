@@ -22,7 +22,6 @@ header genere le verifient.
 """
 
 import hashlib
-import os
 import re
 import subprocess
 from importlib.resources import files
