@@ -63,6 +63,7 @@ from pygccxml.parser import declarations_joiner, source_reader
 
 from scry import model
 from scry.config import Config, load_config
+from scry.parsing.comments import SourceComments
 
 
 class IntrospectionError(RuntimeError):
@@ -133,6 +134,7 @@ class Introspector(object):
         self.cfg = cfg or load_config()
         self._xml_config = None
         self.report = ParseReport()
+        self._comments = SourceComments()
 
     # -- configuration ------------------------------------------------------
     def xml_config(self):
@@ -163,6 +165,13 @@ class Introspector(object):
                 **common
             )
         return self._xml_config
+
+    @property
+    def read_comments(self) -> bool:
+        return self.cfg.get_bool("introspection", "comments", True)
+
+    def _doc(self, decl) -> str:
+        return self._comments.for_decl(decl) if self.read_comments else ""
 
     @property
     def stop_on_error(self) -> bool:
@@ -409,6 +418,7 @@ class Introspector(object):
             align=_int_or_none(getattr(cls, "byte_align", None)),
             header=getattr(getattr(cls, "location", None), "file_name", ""),
             is_polymorphic=self._is_polymorphic(cls),
+            doc=self._doc(cls),
         )
         struct.fields = self._members(cls, base_offset=0, path="obj",
                                       depth=0, seen=(self._key(cls),))
@@ -474,6 +484,7 @@ class Introspector(object):
             bit_width=bit_width,
             bit_offset=bit_offset,
             is_static=is_static,
+            doc=self._doc(var),
         )
         self._describe_type(fld, var.decl_type, depth, seen)
         return fld

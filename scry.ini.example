@@ -79,6 +79,10 @@ include_static = false
 ;   root_globs = Common/*.h;Include/moteur/**/*.h
 root_globs =
 
+; Relire dans le header les commentaires de documentation des membres et des
+; structures : bloc colle au-dessus et fin de ligne, en // comme en /* */.
+comments = true
+
 ; S'arreter au premier header en echec. A false, les echecs sont collectes et
 ; le parsing continue, ce qui est preferable sur un gros lot de headers.
 stop_on_error = false

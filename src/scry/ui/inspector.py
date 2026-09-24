@@ -56,6 +56,10 @@ def facts(node: Optional[TreeNode], struct: Optional[model.Struct],
 def _root_facts(s: model.Struct) -> Facts:
     out = [
         ("Nature", s.kind + (", polymorphe" if s.is_polymorphic else "")),
+    ]
+    if s.doc:
+        out.append(("Doc", s.doc))
+    out += [
         ("sizeof", "-" if s.size is None else "%d o" % s.size),
         ("alignof", "-" if s.align is None else "%d o" % s.align),
         ("Padding", "-" if s.size is None else "%d o" % s.padding_bytes()),
@@ -105,6 +109,8 @@ def _field_facts(node: TreeNode, s: model.Struct, source: Optional[MemorySource]
                  namespace: str) -> Facts:
     f = node.field
     out = [("Chemin", f.access_path), ("Nature", f.kind), ("Type", f.type_name)]
+    if f.doc:
+        out.append(("Doc", f.doc))
     if f.is_static:
         out.append(("Statique", "membre statique : hors instance, pas d'offset"))
         return out

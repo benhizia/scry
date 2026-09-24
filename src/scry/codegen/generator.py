@@ -51,6 +51,7 @@ def field_context(fld: model.Field) -> Dict:
         "is_static": fld.is_static,
         "is_anonymous": fld.is_anonymous,
         "truncated": fld.truncated,
+        "doc": fld.doc,
         "is_char_array": is_char_array,
         "printf_fmt": fmt[0] if fmt else None,
         "printf_expr": fmt[1] if fmt else None,
@@ -110,6 +111,7 @@ def struct_context(struct_info: model.Struct, cfg: Config) -> Dict:
         "align": struct_info.align,
         "padding": struct_info.padding_bytes(),
         "is_polymorphic": struct_info.is_polymorphic,
+        "doc": struct_info.doc,
         "abi_checks": checks,
         "fields": [field_context(f) for f in struct_info.fields],
         "rows": _rows(struct_info.fields, struct_info.size, 0, with_holes=True,
@@ -181,6 +183,9 @@ def render(structs: List[model.Struct], cfg: Optional[Config] = None,
     # Chaine litterale C++ : les noms de type ne contiennent normalement ni
     # guillemet ni antislash, mais un header tiers n'offre aucune garantie.
     env.filters["cstr"] = lambda s: str(s).replace("\\", "\\\\").replace('"', '\\"')
+    # Commentaire C++ d'une ligne : un antislash final prolongerait le
+    # commentaire sur la ligne suivante du code genere.
+    env.filters["ccomment"] = lambda s: " ".join(str(s).split()).rstrip("\\ ")
     template = env.get_template(template_name)
     return template.render(**build_context(structs, cfg, header))
 

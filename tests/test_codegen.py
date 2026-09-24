@@ -103,3 +103,20 @@ def test_cl_command_transmet_cl_flags():
     cl = Path("C:/VS/cl.exe")
     quoted = '"%s"' % msvc_env._cl_command(cl, "c++17", "  /MDd /D_DEBUG ")
     assert quoted == '"(" "%s" /std:c++17 /MDd /D_DEBUG ")"' % cl
+
+
+def test_doc_en_infobulle_et_en_commentaire():
+    s = model.Struct(name="D", size=8, align=4, header="d.h", doc='Etat "moteur" \\', fields=[
+        model.Field(name="a", type_name="int", kind=model.FUNDAMENTAL, offset=0,
+                    abs_offset=0, size=4, access_path="obj.a", doc='Regime en "tr/min"'),
+        model.Field(name="b", type_name="int", kind=model.FUNDAMENTAL, offset=4,
+                    abs_offset=4, size=4, access_path="obj.b"),
+    ])
+    text = generator.render([s], _cfg())
+    # Litteral C++ echappe, passe en dernier argument de detail::row.
+    assert 'detail::kColorFundamental, false, "Regime en \\"tr/min\\"");' in text
+    assert 'detail::row("b##4", "int", 4, 4, detail::RowKind::Leaf, detail::kColorFundamental);' in text
+    # Commentaire d'une ligne sans antislash final, qui avalerait la suivante.
+    assert '// Etat "moteur"\n' in text
+    assert s.to_dict()["doc"] == 'Etat "moteur" \\'
+    assert s.to_dict()["fields"][0]["doc"] == 'Regime en "tr/min"'

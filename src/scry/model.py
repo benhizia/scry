@@ -60,6 +60,9 @@ class Field:
     # Raison d'un arret de descente : "depth", "cycle", "opaque", "pointer"
     truncated: str = ""
 
+    # Commentaire de documentation relu dans le header, '' si aucun.
+    doc: str = ""
+
     children: List["Field"] = dc_field(default_factory=list)
 
     @property
@@ -106,6 +109,7 @@ class Field:
             "is_const": self.is_const,
             "truncated": self.truncated,
             "is_readable": self.is_readable,
+            "doc": self.doc,
         }
         d["children"] = [c.to_dict() for c in self.children]
         return d
@@ -180,6 +184,7 @@ class Struct:
     align: Optional[int] = None
     header: str = ""
     is_polymorphic: bool = False
+    doc: str = ""
     fields: List[Field] = dc_field(default_factory=list)
 
     def walk(self):
@@ -218,6 +223,7 @@ class Struct:
             "align": self.align,
             "header": self.header,
             "is_polymorphic": self.is_polymorphic,
+            "doc": self.doc,
             "padding": self.padding_bytes(),
             "fields": [f.to_dict() for f in self.fields],
         }

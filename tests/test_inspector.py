@@ -70,3 +70,13 @@ def test_valeur_et_octets_avec_une_source():
     d = dict(inspector.facts(_node(tree.build_tree(s), "a"), s, source))
     assert d["Octets"] == "03 0A 11 18"
     assert d["Valeur"] == str(int.from_bytes(bytes([3, 10, 17, 24]), "little", signed=True))
+
+
+def test_doc_affichee_par_l_inspecteur():
+    s = _struct()
+    s.doc = "Structure documentee"
+    s.fields[0].doc = "Premier membre"
+    root = tree.build_tree(s)
+    assert dict(inspector.facts(root, s))["Doc"] == "Structure documentee"
+    first = root.children[0] if not root.children[0].is_padding else root.children[1]
+    assert dict(inspector.facts(first, s))["Doc"] == "Premier membre"

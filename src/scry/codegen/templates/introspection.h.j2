@@ -109,8 +109,10 @@ inline bool begin_members_table(const char* id)
 // Ouvre une ligne et remplit Nom, Type, Offset et Taille. La colonne Valeur
 // reste courante pour l'appelant. Retourne true si le noeud est ouvert :
 // l'appelant doit alors appeler ImGui::TreePop().
+// doc : commentaire du membre dans le header source, affiche au survol.
 inline bool row(const char* label, const char* type, std::size_t abs_offset,
-                std::size_t size, RowKind kind, ImU32 color, bool default_open = false)
+                std::size_t size, RowKind kind, ImU32 color, bool default_open = false,
+                const char* doc = nullptr)
 {
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
@@ -124,6 +126,8 @@ inline bool row(const char* label, const char* type, std::size_t abs_offset,
     ImGui::PushStyleColor(ImGuiCol_Text, color);
     const bool open = ImGui::TreeNodeEx(label, flags);
     ImGui::PopStyleColor();
+    if (doc != nullptr && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", doc);
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(type);
     ImGui::TableNextColumn();
@@ -141,21 +145,22 @@ inline bool row(const char* label, const char* type, std::size_t abs_offset,
 {%- set sub = 'b%d' % level %}
 {%- set iv = 'i%d' % level %}
 {%- set absx = '%d%s' % (f.abs_offset, extra) %}
+{%- set docarg = (', false, "' ~ (f.doc | cstr) ~ '"') if f.get('doc') else '' %}
 {% if f.kind == 'padding' %}
 detail::row("{{ f.label }}##pad{{ f.abs_offset }}", "", {{ absx }}, {{ f.size }}, detail::RowKind::Padding, detail::kColorPadding);
 {% elif f.is_static %}
-detail::row("{{ f.label | cstr }}", "{{ f.type | cstr }}", 0, 0, detail::RowKind::Leaf, detail::kColorDefault);
+detail::row("{{ f.label | cstr }}", "{{ f.type | cstr }}", 0, 0, detail::RowKind::Leaf, detail::kColorDefault{{ docarg }});
 ImGui::TextDisabled("statique, hors instance");
 {% elif f.truncated in ('cycle', 'depth', 'opaque') %}
-detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Leaf, {{ f.color }});
+detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Leaf, {{ f.color }}{{ docarg }});
 ImGui::TextDisabled("[{{ f.truncated }}]");
 {% elif f.is_char_array %}
-detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Leaf, {{ f.color }});
+detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Leaf, {{ f.color }}{{ docarg }});
 ImGui::Text("\"%.{{ f.array_len or 0 }}s\"", read_cstr({{ base }}, {{ f.offset }}));
 {% elif f.kind == 'array' and f.children %}
 {%- set elem = f.children[0] %}
 {%- set stride = (f.size // f.array_len) if (f.size and f.array_len) else 0 %}
-if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Aggregate, {{ f.color }})) {
+if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Aggregate, {{ f.color }}{{ docarg }})) {
     for (int {{ iv }} = 0; {{ iv }} < {{ f.array_len or 0 }}; ++{{ iv }}) {
         ImGui::PushID({{ iv }});
         const std::uint8_t* {{ sub }} = {{ base }} + {{ f.offset }} + {{ iv }} * {{ stride }};
@@ -181,7 +186,7 @@ if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}
     ImGui::TreePop();
 }
 {% elif f.rows %}
-if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Aggregate, {{ f.color }})) {
+if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Aggregate, {{ f.color }}{{ docarg }})) {
     const std::uint8_t* {{ sub }} = {{ base }} + {{ f.offset }};
 {% for child in f.rows %}
 {{ emit_item(child, sub, level + 1, extra) | indent(4, true) }}
@@ -189,7 +194,7 @@ if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}
     ImGui::TreePop();
 }
 {% else %}
-detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Leaf, {{ f.color }});
+detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Leaf, {{ f.color }}{{ docarg }});
 {% if f.bit_width %}
 ImGui::Text("%llu", read_bits({{ base }}, {{ f.offset }}, {{ f.size or 1 }}, {{ f.bit_offset or 0 }}, {{ f.bit_width }}));
 {% elif f.kind == 'pointer' %}
@@ -212,6 +217,9 @@ ImGui::Text("{{ f.printf_fmt }}", {{ f.printf_expr | replace('{expr}', 'read_at<
 {% for s in structs %}
 // =============================================================================
 // {{ s.name }}   sizeof={{ s.size }}  alignof={{ s.align }}  padding={{ s.padding }}
+{% if s.doc %}
+// {{ s.doc | ccomment }}
+{% endif %}
 {% if s.is_polymorphic %}
 // Type polymorphe : un pointeur de vtable occupe le debut de l'objet et les
 // offsets ci-dessous en tiennent compte. Ne pas reconstruire l'objet par memcpy.
