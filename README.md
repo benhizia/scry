@@ -150,8 +150,11 @@ scry.ini                    paramétrage local, non versionné
 README.md
 DEVELOPPEMENT.md            environnement Python, packaging, publication
 Data/                       headers d'essai
+Data/corpus/                corpus rejoué par tests/test_corpus.py, voir son README
 Generated/                  sortie, non versionnée
-tests/                      tests du modèle, sans castxml ni MSVC
+tests/                      tests du modèle, sans castxml ni MSVC, plus
+                            test_corpus.py et test_verify_reel.py qui sautent
+                            sans castxml ni g++
 src/
   scry/
     __init__.py

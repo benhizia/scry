@@ -186,6 +186,7 @@ if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}
 {% elif f.rows %}
 if (detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Aggregate, {{ f.color }})) {
     const std::uint8_t* {{ sub }} = {{ base }} + {{ f.offset }};
+    (void){{ sub }};  // inutilise si seul du padding est visible
 {% for child in f.rows %}
 {{ emit_item(child, sub, level + 1, extra) | indent(4, true) }}
 {% endfor %}
@@ -222,6 +223,7 @@ ImGui::Text("{{ f.printf_fmt }}", {{ f.printf_expr | replace('{expr}', 'read_at<
 // =============================================================================
 inline void {{ s.func }}_rows(const std::uint8_t* base)
 {
+    (void)base;  // inutilise pour une structure sans membre visible
 {% for f in s.rows %}
 {{ emit_item(f, 'base', 1, '') | indent(4, true) }}
 {% endfor %}
@@ -267,6 +269,14 @@ struct StructInfo
 
 namespace detail {
 
+// Pour un type dont un constructeur par defaut est defini hors du header,
+// dans la bibliotheque du tiers : le construire ici echouerait a l'edition
+// des liens (voir Struct.inline_constructible).
+inline const std::uint8_t* no_instance()
+{
+    return nullptr;
+}
+
 template <typename T>
 const std::uint8_t* default_instance()
 {
@@ -283,7 +293,7 @@ const std::uint8_t* default_instance()
 inline const StructInfo kStructs[] = {
 {% for s in structs %}
     {"{{ s.name | cstr }}", sizeof({{ s.name }}), alignof({{ s.name }}), {{ s.padding or 0 }}u, {{ 'true' if s.is_polymorphic else 'false' }},
-     static_cast<void (*)(const std::uint8_t*)>(&{{ s.func }}), &detail::default_instance<{{ s.name }}>},
+     static_cast<void (*)(const std::uint8_t*)>(&{{ s.func }}), {{ ('&detail::default_instance<' ~ s.name ~ '>') if s.inline_constructible else '&detail::no_instance' }}},
 {% endfor %}
 };
 

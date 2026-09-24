@@ -56,6 +56,9 @@ class Field:
     is_static: bool = False
     is_anonymous: bool = False
     is_const: bool = False
+    # "public", "protected" ou "private". offsetof n'est permis, hors de la
+    # classe, que sur un membre public.
+    access: str = "public"
 
     # Raison d'un arret de descente : "depth", "cycle", "opaque", "pointer"
     truncated: str = ""
@@ -104,6 +107,7 @@ class Field:
             "is_static": self.is_static,
             "is_anonymous": self.is_anonymous,
             "is_const": self.is_const,
+            "access": self.access,
             "truncated": self.truncated,
             "is_readable": self.is_readable,
         }
@@ -180,6 +184,11 @@ class Struct:
     align: Optional[int] = None
     header: str = ""
     is_polymorphic: bool = False
+    # Constructible par defaut sans lier la bibliotheque du tiers : aucun
+    # constructeur par defaut, de la classe, de ses bases ou de ses membres,
+    # n'est defini hors du header. Faux, le visualiseur natif ne tente pas de
+    # construire d'instance, ce qui echouerait a l'edition des liens.
+    inline_constructible: bool = True
     fields: List[Field] = dc_field(default_factory=list)
 
     def walk(self):
@@ -218,6 +227,7 @@ class Struct:
             "align": self.align,
             "header": self.header,
             "is_polymorphic": self.is_polymorphic,
+            "inline_constructible": self.inline_constructible,
             "padding": self.padding_bytes(),
             "fields": [f.to_dict() for f in self.fields],
         }

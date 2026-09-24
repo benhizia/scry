@@ -50,6 +50,8 @@ PIEGES PYGCCXML, chacun rencontre pour de vrai
     sans byte_size.
   * Les templates n'existent dans l'AST que s'ils sont instancies.
   * Les structures auto-referencantes bouclent sans garde-fou.
+  * declarations.is_class() repond vrai sur un pointeur vers une classe.
+    Tester is_pointer() avant, comme le fait _describe_type.
 """
 
 import fnmatch
@@ -409,6 +411,7 @@ class Introspector(object):
             align=_int_or_none(getattr(cls, "byte_align", None)),
             header=getattr(getattr(cls, "location", None), "file_name", ""),
             is_polymorphic=self._is_polymorphic(cls),
+            inline_constructible=self._inline_constructible(cls),
         )
         struct.fields = self._members(cls, base_offset=0, path="obj",
                                       depth=0, seen=(self._key(cls),))
@@ -420,6 +423,59 @@ class Introspector(object):
                 if str(m.virtuality) != "not virtual":
                     return True
         return False
+
+    def _inline_constructible(self, cls, seen: Tuple[str, ...] = ()) -> bool:
+        """Construire cls par defaut ne demande-t-il que du code du header ?
+
+        Un constructeur declare dans la classe sans corps, 'Foo();', est
+        defini dans la bibliotheque du tiers : l'appeler depuis le visualiseur
+        echouerait a l'edition des liens. castxml marque inline les
+        constructeurs implicites, '= default' et definis dans la classe.
+        Recursif sur les bases et les membres, tableaux compris : un
+        std::array ou un std::pair d'un tel type l'appelle aussi, pas un
+        std::vector, qui ne construit rien. Une definition inline placee apres
+        la classe n'est pas vue : le resultat est alors prudent, pas faux.
+        """
+        key = self._key(cls)
+        if key in seen:
+            return True
+        cache = self.__dict__.setdefault("_ctor_cache", {})
+        if key in cache:
+            return cache[key]
+        seen = seen + (key,)
+
+        ok = True
+        try:
+            ctors = cls.constructors(allow_empty=True, recursive=False)
+        except Exception:
+            ctors = []
+        for ct in ctors:
+            if not ct.required_args and not ct.is_artificial and not ct.has_inline:
+                ok = False
+        if ok:
+            for base in getattr(cls, "bases", []):
+                if not self._inline_constructible(base.related_class, seen):
+                    ok = False
+                    break
+        if ok:
+            for var in cls.variables(allow_empty=True, recursive=False):
+                if getattr(var.type_qualifiers, "has_static", False):
+                    continue
+                t = declarations.remove_cv(declarations.remove_alias(var.decl_type))
+                while declarations.is_array(t):
+                    t = declarations.remove_cv(declarations.remove_alias(
+                        declarations.array_item_type(t)))
+                # is_class() repond vrai sur un pointeur vers une classe : un
+                # pointeur ne construit rien, il faut l'ecarter d'abord.
+                if declarations.is_pointer(t) or declarations.is_reference(t) \
+                        or not declarations.is_class(t):
+                    continue
+                if not self._inline_constructible(
+                        declarations.class_traits.get_declaration(t), seen):
+                    ok = False
+                    break
+        cache[key] = ok
+        return ok
 
     def _key(self, decl) -> str:
         # decl_string d'un type anonyme renvoie le nom du parent : deux types
@@ -444,11 +500,13 @@ class Introspector(object):
             is_static = bool(getattr(var.type_qualifiers, "has_static", False))
             if is_static and not self.cfg.include_static:
                 continue
-            if not self.cfg.include_non_public:
-                access = getattr(var, "access_type", None)
-                if access is not None and str(access) != "public":
-                    continue
-            fields.append(self._build_field(var, base_offset, path, depth, seen, is_static))
+            access = getattr(var, "access_type", None)
+            access = str(access) if access is not None else "public"
+            if access != "public" and not self.cfg.include_non_public:
+                continue
+            fld = self._build_field(var, base_offset, path, depth, seen, is_static)
+            fld.access = access
+            fields.append(fld)
         return fields
 
     def _build_field(self, var, base_offset: int, path: str, depth: int,

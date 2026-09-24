@@ -70,3 +70,11 @@ def test_valeur_et_octets_avec_une_source():
     d = dict(inspector.facts(_node(tree.build_tree(s), "a"), s, source))
     assert d["Octets"] == "03 0A 11 18"
     assert d["Valeur"] == str(int.from_bytes(bytes([3, 10, 17, 24]), "little", signed=True))
+
+
+def test_membre_prive_sans_offsetof():
+    s = _struct()
+    s.fields[0].access = "private"
+    d = dict(inspector.facts(tree.build_tree(s).children[0], s))
+    assert d["Acces"].startswith("private")
+    assert "offsetof" not in d

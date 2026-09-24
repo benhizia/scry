@@ -92,11 +92,15 @@ def _rows(fields, size, base_abs: int, with_holes: bool, vptr: bool = False) -> 
 
 def struct_context(struct_info: model.Struct, cfg: Config) -> Dict:
     # offsetof n'est fiable que sur les membres de premier niveau non statiques
-    # et non champs de bits : on ne genere des assertions que pour ceux-la.
+    # et non champs de bits, et n'est permis hors de la classe que sur un
+    # membre public : on ne genere des assertions que pour ceux-la. Les
+    # membres non publics restent couverts par sizeof et par les offsets des
+    # membres publics qui les suivent.
     checks = [
         {"member": f.name, "offset": f.abs_offset}
         for f in struct_info.fields
         if f.name and not f.is_static and not f.is_bitfield and not f.is_anonymous
+        and f.access == "public"
     ]
 
     return {
@@ -110,6 +114,7 @@ def struct_context(struct_info: model.Struct, cfg: Config) -> Dict:
         "align": struct_info.align,
         "padding": struct_info.padding_bytes(),
         "is_polymorphic": struct_info.is_polymorphic,
+        "inline_constructible": struct_info.inline_constructible,
         "abi_checks": checks,
         "fields": [field_context(f) for f in struct_info.fields],
         "rows": _rows(struct_info.fields, struct_info.size, 0, with_holes=True,

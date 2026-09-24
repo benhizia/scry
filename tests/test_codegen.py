@@ -110,3 +110,24 @@ def test_cl_command_transmet_cl_flags():
     cl = Path("C:/VS/cl.exe")
     quoted = '"%s"' % msvc_env._cl_command(cl, "c++17", "  /MDd /D_DEBUG ")
     assert quoted == '"(" "%s" /std:c++17 /MDd /D_DEBUG ")"' % cl
+
+
+def test_membre_non_public_sans_offsetof():
+    s = model.Struct(name="C", size=8, align=4, header="c.h", fields=[
+        model.Field(name="pub", type_name="int", kind=model.FUNDAMENTAL, offset=0,
+                    abs_offset=0, size=4, access_path="obj.pub"),
+        model.Field(name="priv_", type_name="int", kind=model.FUNDAMENTAL, offset=4,
+                    abs_offset=4, size=4, access_path="obj.priv_", access="private"),
+    ])
+    abi = generator.render([s], _cfg(), "abi_checks.h.j2")
+    assert "offsetof(abi_C, pub)" in abi
+    assert "priv_" not in abi
+
+
+def test_pas_d_instance_si_un_constructeur_est_hors_du_header():
+    ok = model.Struct(name="Ok", size=4, align=4, header="o.h")
+    ko = model.Struct(name="Ko", size=4, align=4, header="o.h", inline_constructible=False)
+    text = generator.render([ok, ko], _cfg())
+    assert "&detail::default_instance<Ok>" in text
+    assert "&detail::default_instance<Ko>" not in text
+    assert "&detail::no_instance}" in text

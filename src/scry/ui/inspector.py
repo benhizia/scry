@@ -137,8 +137,12 @@ def _field_facts(node: TreeNode, s: model.Struct, source: Optional[MemorySource]
 
     # offsetof : invalide sur un champ de bits. Un type template contient une
     # virgule qui couperait la macro : on passe alors par l'alias genere.
+    if f.access != "public":
+        out.append(("Acces", "%s : ni offsetof ni lecture par nom hors de la "
+                             "classe, seule la lecture par offset reste possible"
+                    % f.access))
     member = f.access_path.split(".", 1)[1] if "." in f.access_path else ""
-    if member and not f.is_bitfield:
+    if member and not f.is_bitfield and f.access == "public":
         target = s.name
         if "," in target:
             target = "%s::abi::abi_%s" % (namespace, _cpp_identifier(s.name))
