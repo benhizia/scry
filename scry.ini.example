@@ -111,3 +111,11 @@ build_dir = build/viewer
 ; separes par des ;  Format 'nom: options de cl'. Reprendre les options de la
 ; cible qui touchent au layout : runtime (/MD, /MDd), /Zp, macros /D.
 profiles = release: /MD; debug: /MDd
+
+; Pendant de 'profiles' pour [castxml] compiler = gcc ou clang : 'scry verify'
+; compile alors avec g++ ou clang++ en -fsyntax-only. Cle distincte pour qu'un
+; meme scry.ini serve sous Windows et en CI Linux. -D_GLIBCXX_DEBUG est le
+; pendant de /MDd : la STL de debug de libstdc++ grossit les conteneurs.
+gnu_profiles = release: -O2; debug: -D_GLIBCXX_DEBUG
+; Compilateur des profils gnu. Vide = g++ pour gcc, clang++ pour clang.
+cxx =

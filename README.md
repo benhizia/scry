@@ -93,7 +93,7 @@ scry dump                affiche l'arbre avec offsets et tailles
 scry gen                 écrit Generated/introspection.generated.h et abi_checks.generated.h
 scry json modele.json    exporte le modèle brut
 scry ui                  visualiseur ImGui
-scry verify              compile les assertions ABI avec cl, pour chaque profil de build
+scry verify              compile les assertions ABI (cl, g++ ou clang++), pour chaque profil de build
 scry viewer --run        compile et lance le visualiseur C++ natif (ImGui, DirectX 11)
 ```
 
@@ -357,6 +357,19 @@ Le layout dépend donc de ce que voit le préprocesseur, pas de l'optimisation :
 `/MDd` par exemple, pour que castxml voie les mêmes macros. `scry verify`
 compile ensuite `abi_checks.generated.h` avec le vrai `cl`, pour chaque profil
 de `[verify] profiles`, et dit pour quelles configurations le modèle tient.
+
+Hors Windows, avec `[castxml] compiler = gcc` ou `clang`, `scry verify` passe
+par `g++` ou `clang++` en `-fsyntax-only` (`[verify] cxx` pour en forcer un),
+avec les profils de `[verify] gnu_profiles`. Le pendant de `/MDd` y est
+`-D_GLIBCXX_DEBUG`, qui grossit les conteneurs de libstdc++ exactement de la
+même façon : le profil `debug` par défaut échoue tant que castxml n'a pas vu
+la macro (`[castxml] extra_cflags`). C'est ce qui rend la vérification d'ABI
+possible en CI Linux, avec `pip install castxml`.
+
+| Profil gnu par défaut | Options | Effet sur le layout |
+|---|---|---|
+| `release` | `-O2` | aucun |
+| `debug` | `-D_GLIBCXX_DEBUG` | `vector`, `string`, `map`, `optional`… grossissent |
 
 **`introspection.generated.h` : le rendu ImGui.** Il inclut le header ABI.
 

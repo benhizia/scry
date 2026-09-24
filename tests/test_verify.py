@@ -51,3 +51,60 @@ def test_compile_command():
     for option in ("/Zs", "/std:c++17", "/MDd", "/DX=1", "/IC:/inc"):
         assert option in cmd
     assert cmd[-1] == "t.cpp"
+
+
+# -- gcc et clang --------------------------------------------------------------
+def _gnu_cfg(tmp_path, body=""):
+    ini = tmp_path / "scry.ini"
+    ini.write_text("[castxml]\ncompiler = gcc\n" + body, encoding="utf-8")
+    return load_config(ini)
+
+
+def test_profils_gnu_par_defaut(tmp_path, monkeypatch):
+    monkeypatch.delenv("SCRY_VERIFY_GNU_PROFILES", raising=False)
+    cfg = _gnu_cfg(tmp_path)
+    assert verify.load_profiles(cfg) == verify.DEFAULT_GNU_PROFILES
+
+
+def test_profils_gnu_ignorent_ceux_de_cl(tmp_path, monkeypatch):
+    # Un meme scry.ini sert sous Windows et en CI Linux : /MD n'a aucun sens
+    # pour g++, les deux jeux de profils sont donc separes.
+    monkeypatch.delenv("SCRY_VERIFY_GNU_PROFILES", raising=False)
+    cfg = _gnu_cfg(tmp_path, "[verify]\nprofiles = release: /MD\n"
+                             "gnu_profiles = asan: -fsanitize=address\n")
+    assert verify.load_profiles(cfg) == [("asan", "-fsanitize=address")]
+
+
+def test_find_cxx(tmp_path, monkeypatch):
+    monkeypatch.delenv("SCRY_VERIFY_CXX", raising=False)
+    assert verify.find_cxx(_gnu_cfg(tmp_path)) == "g++"
+    ini = tmp_path / "clang.ini"
+    ini.write_text("[castxml]\ncompiler = clang\n", encoding="utf-8")
+    assert verify.find_cxx(load_config(ini)) == "clang++"
+    assert verify.find_cxx(_gnu_cfg(tmp_path, "[verify]\ncxx = g++-13\n")) == "g++-13"
+
+
+def test_gnu_compile_command(tmp_path):
+    cfg = _gnu_cfg(tmp_path, "defines = FOO=1\n")
+    cmd = verify.gnu_compile_command("g++", cfg, "-D_GLIBCXX_DEBUG", ["/inc"], "t.cpp")
+    assert cmd[:3] == ["g++", "-fsyntax-only", "-std=c++17"]
+    for option in ("-D_GLIBCXX_DEBUG", "-DFOO=1", "-I/inc"):
+        assert option in cmd
+    assert cmd[-1] == "t.cpp"
+
+
+def test_extract_errors_gcc_et_clang():
+    output = "\n".join([
+        "abi.h:28:47: error: static assertion failed: "
+        "Scry : sizeof(testgen::A) differe de castxml (3968).",
+        "abi.h:36:15: error: static assertion failed due to requirement "
+        "'__builtin_offsetof(testgen::A, b) == 8U': "
+        "Scry : offsetof(testgen::A, b) differe de castxml (8).",
+        "abi.h:36:15: note: expression evaluates to '16 == 8'",
+        "t.cpp:1:10: fatal error: abi.h: No such file or directory",
+    ])
+    assert verify.extract_errors(output) == [
+        "Scry : sizeof(testgen::A) differe de castxml (3968).",
+        "Scry : offsetof(testgen::A, b) differe de castxml (8).",
+        "abi.h: No such file or directory",
+    ]
