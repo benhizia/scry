@@ -91,7 +91,8 @@ machine sans OpenGL.
 scry check               vérifie Visual Studio, castxml, vcvars
 scry dump                affiche l'arbre avec offsets et tailles
 scry gen                 écrit Generated/introspection.generated.h et abi_checks.generated.h
-scry json modele.json    exporte le modèle brut
+scry json modele.json    exporte le modèle, plateforme comprise
+scry diff ref.json       compare au modèle de référence, code 1 si l'ABI a changé
 scry ui                  visualiseur ImGui
 scry verify              compile les assertions ABI avec cl, pour chaque profil de build
 scry viewer --run        compile et lance le visualiseur C++ natif (ImGui, DirectX 11)
@@ -157,6 +158,7 @@ src/
     __init__.py
     __main__.py             python -m scry
     cli.py                  point d'entrée console
+    diff.py                 export JSON avec plateforme, comparaison de modèles
     config.py               chargement de scry.ini, surcharges par variables d'env
     model.py                modèle intermédiaire : Struct, Field. Zéro dépendance.
     parsing/
@@ -372,6 +374,32 @@ architectures qui l'exigent.
 
 ---
 
+## 7 bis. Diff d'ABI entre deux livraisons d'un header
+
+Une bibliothèque précompilée livre une nouvelle version de son header : si un
+layout a changé, tout lecteur par offset lit à côté, et aucun compilateur ne
+le signale. On garde l'export d'une version de référence et on compare :
+
+```
+scry json ref.json            une fois, sur la livraison de référence
+scry diff ref.json            à chaque livraison : parse les headers courants
+scry diff ref.json new.json   ou compare deux exports
+```
+
+L'export porte la plateforme qui l'a produit (compilateur, toolset,
+architecture, standard, `cl_flags`, macros) : `scry diff` prévient quand les
+deux modèles ne viennent pas de la même cible, les écarts pouvant alors venir
+d'elle et non du header. L'ancien format, une simple liste de structures, est
+encore lu.
+
+Code de retour 1 quand un changement fait lire à côté un lecteur de
+l'ancienne version : structure ou membre supprimé, `sizeof`, `alignof`,
+offset, taille, type ou bits d'un membre modifiés. Un simple ajout, structure
+nouvelle ou membre logé dans un trou de padding, est affiché sans échec, sauf
+avec `--strict`. Les membres sont appariés par chemin d'accès (`obj.a.b`).
+
+---
+
 ## 8. Améliorations recommandées
 
 Par ordre de rapport valeur sur effort.
@@ -391,12 +419,7 @@ vite ingérable. Une UI de sélection par namespace et par motif de nom, dont le
 résultat est mémorisé dans la configuration, conditionne l'utilisabilité sur un
 cas réel.
 
-**Diff d'ABI.** Le modèle est déjà sérialisable en JSON. Garder le fichier d'une
-version de référence et comparer permet de détecter qu'un header tiers a changé
-de layout entre deux livraisons. C'est exactement le genre de régression qui
-coûte cher et qu'aucun compilateur ne signale quand la bibliothèque est
-précompilée. Un `scry diff ref.json` en CI est peu de code pour beaucoup de
-valeur.
+**Diff d'ABI : fait.** Voir § 7 bis.
 
 **Cache de parsing.** `parser.file_cache_t` est déjà branché via `[paths] cache`
 mais mérite d'être mesuré et documenté. castxml est lent sur les gros headers,
