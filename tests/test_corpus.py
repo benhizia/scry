@@ -131,3 +131,32 @@ def test_rendu_genere_compile_et_s_execute(tmp_path, header, non_public, imgui_o
     run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, run.stderr
     assert "structures=%d" % len(structs) in run.stdout
+
+
+def test_heritage(tmp_path):
+    structs = {s.name: s for s in _parse(_cfg(tmp_path, False),
+                                         ROOT / "Data/corpus/12_heritage.hpp")}
+
+    def top(name):
+        return [(f.label(), f.abs_offset, f.size) for f in structs[name].fields]
+
+    assert top("Multi") == [("(base) A", 0, 16), ("(base) B", 16, 1), ("m", 20, 4)]
+    # Base vide omise : elle n'occupe aucun octet.
+    assert top("WithEmpty") == [("w", 0, 4)]
+    # Seul le destructeur est virtuel : polymorphe, vptr en tete de la base.
+    assert structs["Poly"].is_polymorphic and structs["Derived"].is_polymorphic
+    assert structs["Derived"].fields[0].is_polymorphic
+    # Base virtuelle signalee, non placee.
+    vbase = structs["V1"].fields[0]
+    assert (vbase.kind, vbase.truncated, vbase.size) == ("base", "virtual", None)
+    # Membres herites atteints par le chemin de la derivee.
+    level2 = {f.access_path: f.abs_offset for f, _ in structs["Level2"].walk()
+              if f.kind != "base"}
+    assert level2 == {"obj.a": 0, "obj.d": 8, "obj.b": 16, "obj.m": 20, "obj.l2": 24}
+    # Vtable portee par un destructeur hors du header : pas d'instance.
+    assert not structs["Poly"].inline_constructible
+    assert not structs["Derived"].inline_constructible
+    assert structs["InlinePoly"].inline_constructible
+    assert structs["FromInline"].inline_constructible
+    # Base privee masquee sans include_non_public.
+    assert top("PrivateBase") == [("pb", 16, 4)]

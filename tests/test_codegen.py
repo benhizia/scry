@@ -131,3 +131,39 @@ def test_pas_d_instance_si_un_constructeur_est_hors_du_header():
     assert "&detail::default_instance<Ok>" in text
     assert "&detail::default_instance<Ko>" not in text
     assert "&detail::no_instance}" in text
+
+
+def _base(type_name, offset, children, **kw):
+    return model.Field(name="", type_name=type_name, kind=model.BASE, offset=offset,
+                       abs_offset=offset, size=16, access_path="obj",
+                       children=children, **kw)
+
+
+def test_offsetof_des_membres_herites_et_noms_ambigus():
+    a = _base("A", 0, [
+        model.Field(name="x", type_name="int", kind=model.FUNDAMENTAL, offset=0,
+                    abs_offset=0, size=4, access_path="obj.x"),
+        model.Field(name="dup", type_name="int", kind=model.FUNDAMENTAL, offset=4,
+                    abs_offset=4, size=4, access_path="obj.dup"),
+    ])
+    virt = _base("V", 0, [], truncated="virtual")
+    priv = _base("P", 0, [
+        model.Field(name="hidden", type_name="int", kind=model.FUNDAMENTAL, offset=0,
+                    abs_offset=0, size=4, access_path="obj.hidden")], access="private")
+    fields = [a, virt, priv,
+              model.Field(name="dup", type_name="int", kind=model.FUNDAMENTAL, offset=16,
+                          abs_offset=16, size=4, access_path="obj.dup")]
+    assert generator._offsetof_targets(fields) == [("x", 0)]
+    assert generator._offsetof_targets(fields, inherited=False) == [("dup", 16)]
+
+
+def test_base_polymorphe_rendue_avec_son_vptr():
+    base = _base("Poly", 0, [
+        model.Field(name="p", type_name="int", kind=model.FUNDAMENTAL, offset=8,
+                    abs_offset=8, size=4, access_path="obj.p")], is_polymorphic=True)
+    s = model.Struct(name="D", size=16, align=8, header="d.h", is_polymorphic=True,
+                     fields=[base])
+    text = generator.render([s], _cfg())
+    assert '"[vptr 8 o]##pad0"' in text
+    assert '"(base) Poly##0"' in text
+    assert "detail::kColorBase" in text

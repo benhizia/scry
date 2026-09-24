@@ -10,7 +10,8 @@ fonctions de rendu s'exécutent en headless.
 
 `01` à `10` et `test_*` viennent d'InterfaceInspector (dossier `test/`), la
 première tentative de Scry. Ils y étaient traités par castxml, Doxygen et un
-programme C++ compilé à la volée. `11_constructeurs.hpp` est propre à Scry.
+programme C++ compilé à la volée. `11_constructeurs.hpp` et `12_heritage.hpp`
+sont propres à Scry.
 
 ## Modifications par rapport à l'original
 

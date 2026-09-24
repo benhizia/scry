@@ -90,6 +90,7 @@ constexpr ImU32 kColorEnum        = IM_COL32(242, 204, 128, 255);
 constexpr ImU32 kColorPointer     = IM_COL32(230, 153, 153, 255);
 constexpr ImU32 kColorArray       = IM_COL32(179, 230, 179, 255);
 constexpr ImU32 kColorUnion       = IM_COL32(242, 179, 242, 255);
+constexpr ImU32 kColorBase        = IM_COL32(166, 204, 230, 255);
 constexpr ImU32 kColorPadding     = IM_COL32(242, 153, 64, 220);
 
 inline bool begin_members_table(const char* id)
@@ -149,7 +150,7 @@ detail::row("{{ f.label }}##pad{{ f.abs_offset }}", "", {{ absx }}, {{ f.size }}
 {% elif f.is_static %}
 detail::row("{{ f.label | cstr }}", "{{ f.type | cstr }}", 0, 0, detail::RowKind::Leaf, detail::kColorDefault);
 ImGui::TextDisabled("statique, hors instance");
-{% elif f.truncated in ('cycle', 'depth', 'opaque') %}
+{% elif f.truncated in ('cycle', 'depth', 'opaque', 'virtual', 'offset') %}
 detail::row("{{ f.label | cstr }}##{{ f.abs_offset }}", "{{ f.type | cstr }}", {{ absx }}, {{ f.size or 0 }}, detail::RowKind::Leaf, {{ f.color }});
 ImGui::TextDisabled("[{{ f.truncated }}]");
 {% elif f.is_char_array %}
