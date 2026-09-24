@@ -253,9 +253,17 @@ def generate(structs: List[model.Struct], cfg: Optional[Config] = None,
     return _write(cfg, cfg.output_header, render(structs, cfg, header=header))
 
 
-def dump_json(structs: List[model.Struct], path: str) -> str:
-    """Export du modele brut. Utile pour alimenter un autre outil ou diffuser l'ABI."""
+def dump_json(structs: List[model.Struct], path: str, cfg: Optional[Config] = None,
+              headers: Optional[List[str]] = None) -> str:
+    """Export du modele. Utile pour alimenter un autre outil, diffuser l'ABI,
+    ou servir de reference a 'scry diff'.
+
+    Le document porte la plateforme qui l'a produit, voir scry.diff.document.
+    """
     import json
+
+    from scry import diff
+    cfg = cfg or load_config()
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump([s.to_dict() for s in structs], fh, indent=2, ensure_ascii=False)
+        json.dump(diff.document(structs, cfg, headers), fh, indent=2, ensure_ascii=False)
     return path

@@ -6,7 +6,8 @@ brancher Scry dans un build ou une CI.
     scry check                       verifie la configuration et l'outillage
     scry dump                        affiche l'arbre des structures
     scry gen                         ecrit le header C++ d'introspection
-    scry json modele.json            exporte le modele brut
+    scry json modele.json            exporte le modele, plateforme comprise
+    scry diff ref.json [autre.json]  compare au modele de reference, code 1 si l'ABI a change
     scry ui                          visualiseur ImGui
     scry verify                      compile les assertions ABI (cl, g++, clang++), par profil
     scry viewer --run                compile et lance le visualiseur C++ natif
@@ -106,9 +107,36 @@ def cmd_json(args, cfg):
     from scry.codegen import generator as codegen
     introspector = Introspector(cfg)
     structs = introspector.parse(args.header)
-    print("Ecrit : %s" % codegen.dump_json(structs, args.out))
+    print("Ecrit : %s" % codegen.dump_json(structs, args.out, cfg,
+                                            headers=introspector.report.parsed))
     _print_report(introspector, args.verbose)
     return 1 if introspector.report.conflicts else 0
+
+
+def cmd_diff(args, cfg):
+    """Compare un modele de reference au modele courant, ou a un second export.
+
+    Code de retour 1 si un layout a change d'une facon qui fait lire a cote un
+    lecteur par offset de l'ancienne version : fait pour une CI.
+    """
+    from scry import diff
+    ref = diff.load(args.ref)
+    if args.new:
+        new = diff.load(args.new)
+        introspector = None
+    else:
+        introspector = Introspector(cfg)
+        structs = introspector.parse(args.header)
+        new = diff.document(structs, cfg, introspector.report.parsed)
+
+    result = diff.compare(ref, new)
+    for line in diff.report(result):
+        print(line)
+    if introspector is not None:
+        _print_report(introspector, args.verbose)
+    if result.breaking:
+        return 1
+    return 1 if args.strict and not result.empty else 0
 
 
 def cmd_verify(args, cfg):
@@ -222,6 +250,14 @@ def main(argv=None):
     sub.add_parser("gen", parents=[common], help="genere le header C++")
     p_json = sub.add_parser("json", parents=[common], help="exporte le modele en JSON")
     p_json.add_argument("out", nargs="?", default="modele.json")
+    p_diff = sub.add_parser("diff", parents=[common],
+                            help="compare au modele de reference (scry json), code 1 si "
+                                 "un layout a change")
+    p_diff.add_argument("ref", help="export de reference, produit par scry json")
+    p_diff.add_argument("new", nargs="?",
+                        help="second export ; a defaut, les headers courants sont parses")
+    p_diff.add_argument("--strict", action="store_true",
+                        help="code 1 aussi pour un simple ajout (structure ou membre)")
     sub.add_parser("ui", parents=[common], help="visualiseur ImGui")
     p_verify = sub.add_parser("verify", parents=[common],
                               help="compile les assertions ABI (cl, g++, clang++), par profil")
@@ -243,7 +279,7 @@ def main(argv=None):
     cfg = load_config(args.config) if args.config else load_config()
 
     handlers = {"check": cmd_check, "dump": cmd_dump, "gen": cmd_gen,
-                "json": cmd_json, "ui": cmd_ui, "verify": cmd_verify,
+                "json": cmd_json, "diff": cmd_diff, "ui": cmd_ui, "verify": cmd_verify,
                 "viewer": cmd_viewer}
     handler = handlers.get(args.cmd)
     if handler is None:
