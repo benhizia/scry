@@ -8,8 +8,9 @@ rem                                  contient 'montee'
 rem
 rem  ETAPES
 rem    1. prepare le venv comme scry_console.bat ;
-rem    2. scry gen --pybind sur Data\test_structs_complexe.h, sortie dans
-rem       demo\build\generated : bindings, stub sut.pyi, fragment CMake ;
+rem    2. scry gen --pybind sur demo\legacy_app.h, sortie dans
+rem       demo\build\generated : bindings, module sut genere (types et
+rem       variables globales), stub sut.pyi, fragment CMake ;
 rem    3. cmake configure et construit demo\legacy_app.exe en Release avec
 rem       LEGACY_AUTOTEST=ON : l'interpreteur Python est embarque dans l'exe ;
 rem    4. lance l'exe. A chaque cycle, apres le code metier, l'etape autotest
@@ -34,9 +35,15 @@ if errorlevel 1 goto :fin
 echo.
 echo [autotest] 1/3 scry gen --pybind
 set "SCRY_PATHS_OUTPUT=%DEMO_BUILD%\generated"
-"%SCRY_VENV%\Scripts\scry.exe" gen --pybind -H "%~dp0..\Data\test_structs_complexe.h"
+rem legacy_app.h inclut Data\test_structs_complexe.h : -I pour castxml. Un
+rem header en echec arrete tout plutot que de generer un module incomplet.
+set "SCRY_CASTXML_INCLUDE_PATHS=%~dp0..\Data"
+set "SCRY_INTROSPECTION_STOP_ON_ERROR=true"
+"%SCRY_VENV%\Scripts\scry.exe" gen --pybind -H "%~dp0demo\legacy_app.h" -H "%~dp0..\Data\test_structs_complexe.h"
 set "GEN_RC=%ERRORLEVEL%"
 set "SCRY_PATHS_OUTPUT="
+set "SCRY_CASTXML_INCLUDE_PATHS="
+set "SCRY_INTROSPECTION_STOP_ON_ERROR="
 if not "%GEN_RC%"=="0" goto :fin
 
 echo.

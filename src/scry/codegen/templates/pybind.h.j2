@@ -10,12 +10,19 @@
 //  Chaine      : castxml + pygccxml, cible {{ compiler }} {{ arch }}, {{ std }}
 //
 //  Des VUES sur la memoire C++, jamais des copies : ecrire un attribut depuis
-//  Python ecrit dans le programme. Point d'entree :
+//  Python ecrit dans le programme. Fait pour un interpreteur Python EMBARQUE
+//  dans l'application, qui lit et ecrit ses structures dans son propre cycle.
+//
+//  Point d'entree : scry_module.generated.cpp, genere lui aussi, definit le
+//  module embarque avec register_all(m) : tous les types, toutes les
+//  variables globales des headers. A la main, l'equivalent est :
 //
 //      #include "scry_pybind.generated.h"
-//      PYBIND11_EMBEDDED_MODULE(sut, m) {          // ou PYBIND11_MODULE
-//          {{ namespace }}::bind::register_types(m);
-//          m.attr("inputs") = py::cast(&g_inputs, py::return_value_policy::reference);
+//      #include <pybind11/embed.h>
+//      PYBIND11_EMBEDDED_MODULE(sut, m) {
+//          {{ namespace }}::bind::register_all(m);
+//          // en plus, un objet qui n'est pas une variable globale :
+//          m.attr("moteur") = py::cast(&app.moteur, py::return_value_policy::reference);
 //      }
 //
 //  Ne jamais exposer l'adresse d'un objet qui ne vit pas aussi longtemps que
@@ -27,6 +34,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -43,8 +51,16 @@
 #include "{{ abi_header }}"
 {% endif %}
 
+// Visibilite cachee, comme pybind11 : sans elle, gcc previent que des types
+// visibles contiennent des objets pybind11 caches.
+#if defined(__GNUC__) && !defined(_WIN32)
+#define SCRY_BIND_HIDDEN __attribute__((visibility("hidden")))
+#else
+#define SCRY_BIND_HIDDEN
+#endif
+
 namespace {{ namespace }} {
-namespace bind {
+namespace SCRY_BIND_HIDDEN bind {
 
 namespace py = pybind11;
 
@@ -190,13 +206,13 @@ inline py::object to_python(py::handle v)
         py::dict out;
         for (py::handle name : v.attr("__scry_fields__"))
             out[name] = to_python(v.attr(name));
-        return std::move(out);
+        return py::object(std::move(out));
     }
     if (py::hasattr(v, "__scry_view__")) {
         py::list out;
         for (py::handle item : v)
             out.append(to_python(item));
-        return std::move(out);
+        return py::object(std::move(out));
     }
     if (py::isinstance<py::array>(v))
         return v.attr("tolist")();
@@ -226,30 +242,177 @@ void services(py::class_<T>& cls, const char* path, py::tuple fields, py::dict l
                        return *reinterpret_cast<T*>(address);
                    },
                    py::return_value_policy::reference);
-    if constexpr (std::is_trivially_copyable<T>::value) {
-        // Vue sur un buffer Python (bytearray, mmap, memoire partagee). Le
-        // buffer reste vivant tant que la vue existe ; ne pas le redimensionner.
-        cls.def_static("from_buffer",
-                       [](py::buffer buffer, std::size_t offset) -> T& {
-                           py::buffer_info info = buffer.request(true);
-                           const std::size_t bytes =
-                               static_cast<std::size_t>(info.size) * info.itemsize;
-                           if (offset + sizeof(T) > bytes)
-                               throw py::value_error("buffer trop court");
-                           char* p = static_cast<char*>(info.ptr) + offset;
-                           if (reinterpret_cast<std::uintptr_t>(p) % alignof(T) != 0)
-                               throw py::value_error("buffer mal aligne pour ce type");
-                           return *reinterpret_cast<T*>(p);
-                       },
-                       py::arg("buffer"), py::arg("offset") = 0,
-                       py::return_value_policy::reference, py::keep_alive<0, 1>());
-        cls.def("to_bytes", [](const T& o) {
-            return py::bytes(reinterpret_cast<const char*>(&o), sizeof(T));
-        });
-    }
     if constexpr (std::is_default_constructible<T>::value && !std::is_abstract<T>::value)
         cls.def(py::init<>());
 }
+
+// -----------------------------------------------------------------------------
+// Variables globales : proprietes de module, lues et ecrites en place.
+//
+// Un attribut de module ordinaire serait une copie figee : sut.g_temps = 3
+// remplacerait l'attribut sans toucher a la variable C++. On donne donc au
+// module une classe derivee de ModuleType, porteuse d'une propriete par
+// variable : lire appelle le getter, ecrire le setter, sans copie ni cache.
+// Ecrire un nom inconnu leve AttributeError : une faute de frappe dans un
+// script ne cree pas silencieusement un attribut qui n'ecrit nulle part.
+//
+// Chaque variable est donnee par un accesseur 'ref' qui rend une reference :
+// l'adresse est resolue par l'editeur de liens, l'acces ne coute qu'un appel.
+// -----------------------------------------------------------------------------
+class Globals
+{
+public:
+    explicit Globals(py::module_ root) : root_(std::move(root)) {}
+
+    // Scalaire, enum, std::string : par valeur, ecrit en place.
+    template <typename Ref>
+    void value(const char* ns, const char* name, Ref ref)
+    {
+        using T = std::remove_reference_t<decltype(ref())>;
+        py::cpp_function get([ref](py::object) { return ref(); });
+        py::object set = py::none();
+        if constexpr (!std::is_const<T>::value && std::is_copy_assignable<T>::value)
+            set = py::cpp_function([ref](py::object, const T& v) { ref() = v; });
+        add(ns, name, get, set);
+    }
+
+    // Structure : vue par reference. Affecter une structure entiere la copie
+    // dans la variable (operator=), attribut par attribut sinon.
+    template <typename Ref>
+    void object(const char* ns, const char* name, Ref ref)
+    {
+        using T = std::remove_reference_t<decltype(ref())>;
+        py::cpp_function get([ref](py::object) -> T& { return ref(); },
+                             py::return_value_policy::reference);
+        py::object set = py::none();
+        if constexpr (!std::is_const<T>::value && std::is_copy_assignable<T>::value)
+            set = py::cpp_function([ref](py::object, const T& v) { ref() = v; });
+        add(ns, name, get, set);
+    }
+
+    // Pointeur vers une structure decrite : vue sur l'objet pointe, None si nul.
+    template <typename Ref>
+    void pointee(const char* ns, const char* name, Ref ref)
+    {
+        using P = std::remove_cv_t<std::remove_reference_t<decltype(ref())>>;
+        using T = std::remove_pointer_t<P>;
+        add(ns, name, py::cpp_function([ref](py::object) -> T* { return ref(); },
+                                       py::return_value_policy::reference), py::none());
+    }
+
+    // Autre pointeur : adresse, en lecture seule.
+    template <typename Ref>
+    void address(const char* ns, const char* name, Ref ref)
+    {
+        add(ns, name, py::cpp_function([ref](py::object) {
+                return reinterpret_cast<std::uintptr_t>(ref());
+            }), py::none());
+    }
+
+    // char[N] <-> str, longueur verifiee.
+    template <typename Ref>
+    void text(const char* ns, const char* name, Ref ref)
+    {
+        using A = std::remove_reference_t<decltype(ref())>;
+        py::object set = py::none();
+        if constexpr (!std::is_const<std::remove_extent_t<A>>::value)
+            set = py::cpp_function([ref, name](py::object, const std::string& v) {
+                char_set(ref(), v, name);
+            });
+        add(ns, name, py::cpp_function([ref](py::object) { return char_get(ref()); }), set);
+    }
+
+    // Tableau numerique : vue numpy sans copie, le module en est le proprietaire.
+    template <typename Ref>
+    void numeric(const char* ns, const char* name, Ref ref)
+    {
+        using A = std::remove_reference_t<decltype(ref())>;
+        py::object set = py::none();
+        if constexpr (!std::is_const<std::remove_all_extents_t<A>>::value)
+            set = py::cpp_function([ref](py::object, py::object v) { numeric_assign(ref(), v); });
+        add(ns, name, py::cpp_function([ref](py::object self) {
+                py::array view = numeric_view(self, const_cast<std::remove_const_t<A>&>(ref()));
+                if constexpr (std::is_const<std::remove_all_extents_t<A>>::value)
+                    view.attr("flags").attr("writeable") = false;
+                return view;
+            }), set);
+    }
+
+    // Tableau de structures : elements par reference.
+    template <typename Ref>
+    void view(const char* ns, const char* name, Ref ref)
+    {
+        add(ns, name, py::cpp_function([ref](py::object) { return make_view(ref()); }),
+            py::none());
+    }
+
+    // Installe les proprietes : une classe de module par namespace.
+    void install()
+    {
+        py::object module_type = py::module_::import("types").attr("ModuleType");
+        py::object builtins = py::module_::import("builtins");
+        for (auto& entry : modules_) {
+            py::module_ mod = submodule(entry.first);
+            py::dict props = entry.second;
+            py::object cls = builtins.attr("type")(
+                std::string(py::str(mod.attr("__name__"))) + "_scry_globals",
+                py::make_tuple(module_type), props);
+            // Chemin rapide d'abord : une variable connue va droit a sa
+            // propriete par l'API C, sans recherche d'attribut Python.
+            cls.attr("__setattr__") = py::cpp_function(
+                [props](py::handle self, py::str name, py::handle value) {
+                    if (!props.contains(name)) {
+                        const std::string key = name;
+                        if (key.rfind("_", 0) != 0 && !py::hasattr(self, name))
+                            throw py::attribute_error("'" + std::string(py::str(
+                                self.attr("__name__"))) + "' n'a pas de variable '" + key + "'");
+                    }
+                    if (PyObject_GenericSetAttr(self.ptr(), name.ptr(), value.ptr()) != 0)
+                        throw py::error_already_set();
+                },
+                py::is_method(cls), py::name("__setattr__"));
+            py::list names;
+            for (auto item : props)
+                names.append(item.first);
+            cls.attr("__scry_globals__") = py::tuple(names);
+            mod.attr("__class__") = cls;
+        }
+    }
+
+private:
+    // py::object et non py::cpp_function : le constructeur template de
+    // cpp_function prendrait une copie non const pour un foncteur a envelopper.
+    void add(const char* ns, const char* name, const py::object& get, const py::object& set)
+    {
+        py::object property = py::module_::import("builtins").attr("property");
+        auto& props = modules_[ns];
+        if (!props)
+            props = py::dict();
+        props[name] = property(get, set);
+    }
+
+    // "sim::detail" -> m.sim.detail, cree s'il manque.
+    py::module_ submodule(const std::string& ns)
+    {
+        py::module_ mod = root_;
+        std::size_t start = 0;
+        while (start < ns.size()) {
+            std::size_t end = ns.find("::", start);
+            if (end == std::string::npos)
+                end = ns.size();
+            const std::string part = ns.substr(start, end - start);
+            if (py::hasattr(mod, part.c_str()))
+                mod = mod.attr(part.c_str()).cast<py::module_>();
+            else
+                mod = mod.def_submodule(part.c_str());
+            start = end + 2;
+        }
+        return mod;
+    }
+
+    py::module_ root_;
+    std::map<std::string, py::dict> modules_;
+};
 
 }  // namespace detail
 
@@ -301,6 +464,24 @@ inline void register_types(py::module_& m)
     hashes["{{ key | cstr }}"] = py::int_({{ value }});
 {% endfor %}
     m.attr("__scry_layout_hashes__") = hashes;
+}
+
+// Variables globales des headers, exposees par reference ([pybind] expose et
+// hide filtrent par nom qualifie). A appeler apres register_types.
+inline void register_globals(py::module_& m)
+{
+    detail::Globals globals(m);
+{% for g in globals %}
+    {{ g.line }}
+{% endfor %}
+    globals.install();
+}
+
+// Tout : types, enums et variables globales.
+inline void register_all(py::module_& m)
+{
+    register_types(m);
+    register_globals(m);
 }
 
 }  // namespace bind

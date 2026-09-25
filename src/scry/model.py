@@ -281,6 +281,39 @@ class Struct:
         }
 
 
+@dataclass
+class Variable:
+    """Variable globale declaree dans un header : 'extern Etat g_etat;'.
+
+    Son type est decrit par un Field, comme un membre : meme nature, meme
+    taille, memes enfants. C'est ce que les bindings exposent par reference a
+    un script Python embarque. Les variables 'static' d'un header sont
+    ecartees au parsing : chaque unite de compilation en a sa propre copie, et
+    lier celle des bindings serait lier la mauvaise.
+    """
+
+    name: str                        # "g_etat"
+    qualified_name: str              # "sim::g_etat"
+    field: Field
+    is_const: bool = False
+    header: str = ""
+
+    @property
+    def namespace(self) -> str:
+        """"sim::detail::g" -> "sim::detail", "" a la racine."""
+        head, sep, _ = self.qualified_name.rpartition("::")
+        return head if sep else ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "qualified_name": self.qualified_name,
+            "is_const": self.is_const,
+            "header": self.header,
+            "type": self.field.to_dict(),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Correspondance type C++ -> format ImGui, utilisee par le generateur
 # ---------------------------------------------------------------------------

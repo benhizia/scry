@@ -7,7 +7,7 @@ from autotest import cycles, expect, scenario
 
 @scenario(tags=["demo-echec"])
 async def echec_volontaire(sut):
-    sut.sensor.valid = True
-    sut.sensor.value = 10.0
+    sut.app.g_sensor.valid = True
+    sut.app.g_sensor.value = 10.0
     await cycles(1)
-    expect(sut.telemetry.phase, "phase").eq(sut.testgen.FlightPlan.Phase.Cruise)
+    expect(sut.app.g_telemetry.phase, "phase").eq(sut.testgen.FlightPlan.Phase.Cruise)

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #if LEGACY_AUTOTEST
@@ -60,15 +61,10 @@ void metier()
 }  // namespace app
 
 #if LEGACY_AUTOTEST
-static std::wstring env(const wchar_t* name)
+static std::wstring env(const char* name)
 {
-    wchar_t* value = nullptr;
-    std::size_t length = 0;
-    if (_wdupenv_s(&value, &length, name) != 0 || value == nullptr)
-        return L"";
-    std::wstring out(value);
-    std::free(value);
-    return out;
+    const char* value = std::getenv(name);
+    return value ? std::wstring(value, value + std::strlen(value)) : std::wstring();
 }
 #endif
 
@@ -76,7 +72,7 @@ int main(int argc, char** argv)
 {
 #if LEGACY_AUTOTEST
     autotest::HostConfig cfg;
-    cfg.venv = env(L"AUTOTEST_VENV");
+    cfg.venv = env("AUTOTEST_VENV");
     cfg.paths = {L"" AUTOTEST_PYTHON_DIR};
     cfg.scenarios = AUTOTEST_SCENARIOS_DIR;
     cfg.select = argc > 1 ? argv[1] : "";

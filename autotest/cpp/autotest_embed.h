@@ -19,8 +19,9 @@
 //              return host.exit_code();
 //      }
 //
-//  Le module Python 'sut' (PYBIND11_EMBEDDED_MODULE) est defini ailleurs dans
-//  l'application : c'est lui qui expose ses globales aux scenarios.
+//  Le module Python 'sut' (PYBIND11_EMBEDDED_MODULE) est genere par Scry :
+//  scry_module.generated.cpp, qui expose tous les types et toutes les
+//  variables globales des headers, par reference.
 //
 //  Garanties :
 //    - tick() ne laisse jamais sortir d'exception : une erreur Python arrete
@@ -74,7 +75,11 @@ public:
         PyConfig_InitPythonConfig(&config);
         config.install_signal_handlers = 0;  // l'application garde ses handlers
         if (!cfg.venv.empty()) {
+#if defined(_WIN32)
             const std::wstring exe = cfg.venv + L"\\Scripts\\python.exe";
+#else
+            const std::wstring exe = cfg.venv + L"/bin/python";
+#endif
             const PyStatus status = PyConfig_SetString(&config, &config.executable, exe.c_str());
             if (PyStatus_Exception(status)) {
                 PyConfig_Clear(&config);

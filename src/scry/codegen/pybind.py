@@ -1,15 +1,16 @@
 """Bindings pybind11 generes : 'scry gen --pybind'.
 
 Principe : des VUES sur la memoire C++, jamais des copies. Chaque struct
-devient un py::class_<T>. On y accede par reference : globale exposee par
-l'application, from_address() ou from_buffer(). Ecrire un attribut ecrit donc
-dans la memoire du programme. C'est ce qu'il faut a un script d'autotest qui
-positionne des entrees et verifie des sorties dans l'application elle-meme.
+devient un py::class_<T>, chaque variable globale des headers une propriete
+du module. On y accede par reference, depuis un interpreteur Python embarque
+dans l'application : ecrire un attribut ecrit dans la memoire du programme.
+C'est ce qu'il faut a un script qui lit et modifie les interfaces d'un
+simulateur dans son propre cycle, sans IPC ni copie.
 
-Le header genere expose scry::bind::register_types(py::module_&), utilisable
-aussi bien dans PYBIND11_EMBEDDED_MODULE (interpreteur embarque dans l'appli)
-que dans PYBIND11_MODULE (module .pyd). Il inclut abi_checks.generated.h : les
-bindings ne compilent que si le layout du modele est celui du compilateur.
+Le header genere expose scry::bind::register_types, register_globals et
+register_all ; scry_module.generated.cpp definit le module embarque avec
+register_all. Il inclut abi_checks.generated.h : les bindings ne compilent
+que si le layout du modele est celui du compilateur.
 
 Le code C++ des membres est prepare ici, pas dans Jinja : les regles
 (bitfields, tableaux, types anonymes, STL, mots-cles Python) rendraient le
@@ -145,19 +146,61 @@ class BoundEnum(object):
         self.namespace = ""
 
 
+class BoundGlobal(object):
+    """Variable globale exposee comme propriete d'un module Python."""
+
+    def __init__(self, var: model.Variable):
+        self.var = var
+        self.namespace = var.namespace
+        self.py_name = py_identifier(var.name)
+        self.expr = "::" + var.qualified_name   # :: : jamais resolu dans scry::bind
+        self.line = ""                            # appel C++ genere
+        self.hint = ""                            # type pour le stub .pyi
+
+
 class Binder(object):
     """Parcourt le modele et prepare tout ce que le template assemble."""
 
-    def __init__(self, structs: Sequence[model.Struct]):
+    def __init__(self, structs: Sequence[model.Struct],
+                 variables: Sequence[model.Variable] = ()):
         self.types = []               # type: List[BoundType]
         self.by_key = {}              # type: Dict[str, BoundType]
         self.enums = []               # type: List[BoundEnum]
         self.enum_by_key = {}         # type: Dict[str, BoundEnum]
         self.views = []               # type: List[Tuple[BoundType, str]]
         self._view_keys = set()
+        self.globals = [BoundGlobal(v) for v in variables]   # type: List[BoundGlobal]
         for s in structs:
             self._type(s.name, s.name, s.kind, s.name, s.fields, None, None, s)
+        for g in self.globals:
+            self._discover_global(g)
         self._finalize()
+
+    def _discover_global(self, g: BoundGlobal):
+        """Types a enregistrer pour une variable : son type, ses enfants."""
+        f = g.var.field
+        if f.kind == model.ENUM and f.enum_type:
+            self._enum(f)
+        if f.kind in model.AGGREGATES:
+            q = f.qualified_type
+            if q and _is_std(q):
+                return
+            if q:
+                self._type(q, q, f.kind, q, f.children, None, None)
+            else:
+                # Variable d'un type anonyme : 'struct { int a; } g;'.
+                self._type("global:" + g.var.qualified_name, "decltype(%s)" % g.expr,
+                           f.kind, "", f.children, None, None)
+        elif f.kind == model.ARRAY and f.children:
+            elem = f.children[0]
+            if elem.qualified_type and not _is_std(elem.qualified_type):
+                t = self._type(elem.qualified_type, elem.qualified_type, elem.kind,
+                               elem.qualified_type, elem.children, None, None)
+            else:
+                t = self._type("global:%s[]" % g.var.qualified_name,
+                               "std::remove_all_extents_t<decltype(%s)>" % g.expr,
+                               elem.kind, "", elem.children, None, None)
+            self._view(t)
 
     # -- decouverte ---------------------------------------------------------
     def _type(self, key, cpp, kind, qualified, fields, owner, member, root=None):
@@ -242,6 +285,11 @@ class Binder(object):
             if t.owner is not None:
                 t.scope_type = t.owner
                 t.py_name = py_identifier(t.member) + "_t"
+            elif t.key.startswith("global:"):
+                # Type anonyme d'une variable globale : nomme d'apres elle.
+                qualified = t.key[len("global:"):].rstrip("[]")
+                t.namespace, last = split_last(qualified)
+                t.py_name = py_identifier(last) + ("_item_t" if t.key.endswith("[]") else "_t")
             else:
                 parent, last = split_last(t.qualified)
                 t.py_name = py_type_name(last)
@@ -294,10 +342,13 @@ class Binder(object):
         for t in self.types:
             self._bind_fields(t, t.fields, flattened=False)
             self._services(t)
+        for g in self.globals:
+            g.line, g.hint = self._global(g)
+            g.module = ns_py.get(g.namespace, "")
 
     def _namespaces(self) -> List[Dict[str, str]]:
         paths = set()
-        for item in list(self.types) + list(self.enums):
+        for item in list(self.types) + list(self.enums) + list(self.globals):
             ns = item.namespace
             while ns:
                 paths.add(ns)
@@ -314,6 +365,63 @@ class Binder(object):
                 "py": ".".join(py_identifier(p) for p in path.split("::")),
             })
         return out
+
+    def _global(self, g: BoundGlobal) -> Tuple[str, str]:
+        """(appel C++, indication de type) pour exposer une variable globale.
+
+        Toutes passent par detail::Globals, qui en fait des proprietes du
+        module : lire sut.g_temps lit la variable, ecrire sut.g_temps = 3.0
+        l'ecrit, sans copie ni cache. Les agregats sont rendus par reference :
+        sut.g_etat.mode = 1 ecrit dans g_etat.
+        """
+        f, name = g.var.field, g.py_name
+        ref = "[]() -> auto& { return %s; }" % g.expr
+        call = 'globals.%s("%s", "%s", %s);'
+        ns = g.namespace
+
+        def line(method):
+            return call % (method, ns, name, ref)
+
+        if f.kind in (model.FUNDAMENTAL, model.ENUM):
+            hint = (self.enum_by_key[f.enum_type].py_path
+                    if f.kind == model.ENUM and f.enum_type in self.enum_by_key
+                    else _scalar_hint(f.type_name, f.size))
+            return line("value"), hint
+        if f.kind == model.POINTER:
+            target = self.by_key.get(f.qualified_type) if f.qualified_type else None
+            if target is not None and target.fields:
+                # Pointeur vers une classe decrite : vue typee sur l'objet
+                # pointe, None si nul. Relu a chaque acces.
+                return line("pointee"), "Optional[%s]" % target.py_path
+            return line("address"), "int"
+        if f.kind == model.ARRAY:
+            if f.children:
+                elem = f.children[0]
+                key = (elem.qualified_type
+                       if elem.qualified_type and not _is_std(elem.qualified_type)
+                       else "global:%s[]" % g.var.qualified_name)
+                return line("view"), "ArrayView[%s]" % self._hint_for_type(key)
+            base = _elem_base(f.elem_type)
+            multi = "[" in (f.elem_type or "")
+            elem_size = (f.size // f.array_len) if (f.size and f.array_len and not multi) else None
+            canon = model.canonical_type(base, elem_size)
+            if canon in CHAR_TYPES and not multi:
+                return line("text"), "str"
+            if canon in model.PRINTF_FORMATS:
+                return line("numeric"), "numpy.ndarray"
+            return "// %s : tableau de %s non gere" % (g.var.qualified_name, f.elem_type), ""
+        if f.kind in model.AGGREGATES:
+            q = f.qualified_type
+            if _is_std_string(q):
+                return line("value"), "str"
+            if q.startswith("std::array<"):
+                return "// %s : std::array global non gere" % g.var.qualified_name, ""
+            if _is_std(q):
+                return ("// %s : %s non liee (STL, pas un POD)"
+                        % (g.var.qualified_name, q.split("<")[0])), ""
+            key = q or "global:" + g.var.qualified_name
+            return line("object"), self._hint_for_type(key)
+        return "// %s : type non gere (%s)" % (g.var.qualified_name, f.type_name), ""
 
     def _hint_for_type(self, key: str) -> str:
         t = self.by_key.get(key)
@@ -460,7 +568,7 @@ Les classes sont des VUES sur la memoire C++ : ecrire un attribut ecrit dans
 le programme. Les namespaces C++ sont des sous-modules, representes ici par
 des classes.
 """
-from typing import Any, Dict, Generic, Iterator, TypeVar
+from typing import Any, Dict, Generic, Iterator, Optional, TypeVar
 
 import numpy
 
@@ -491,6 +599,9 @@ def render_stub(binder: Binder, globals_: Sequence[Tuple[str, str]] = ()) -> str
         scope = getattr(e, "_scope_type", None)
         key = ("type", scope.key) if scope is not None else ("ns", e.namespace)
         add(key, ("enum", e))
+    for g in binder.globals:
+        if g.hint:
+            add(("ns", g.namespace), ("global", g))
 
     out = [_STUB_HEADER]
 
@@ -498,7 +609,10 @@ def render_stub(binder: Binder, globals_: Sequence[Tuple[str, str]] = ()) -> str
         pad = "    " * indent
         for kind, item in children.get(scope_key, []):
             out.append("")
-            if kind == "ns":
+            if kind == "global":
+                note = "  # const" if item.var.is_const else ""
+                out.append('%s%s: "%s"%s' % (pad, item.py_name, item.hint, note))
+            elif kind == "ns":
                 out.append("%sclass %s:  # namespace %s" % (pad, item["name"], item["path"]))
                 before = len(out)
                 emit(("ns", item["path"]), indent + 1)
@@ -522,14 +636,11 @@ def render_stub(binder: Binder, globals_: Sequence[Tuple[str, str]] = ()) -> str
                 out.append("%s    def to_dict(self) -> Dict[str, Any]: ..." % pad)
                 out.append("%s    @staticmethod" % pad)
                 out.append('%s    def from_address(address: int) -> "%s": ...' % (pad, t.py_path))
-                out.append("%s    @staticmethod" % pad)
-                out.append('%s    def from_buffer(buffer: Any, offset: int = 0) -> "%s": ...'
-                           % (pad, t.py_path))
 
     emit(("ns", ""), 0)
     if globals_:
         out.append("")
-        out.append("# Instances exposees par l'application ([pybind] globals).")
+        out.append("# Instances exposees a la main par l'application ([pybind] globals).")
         for name, cpp in globals_:
             t = binder.by_key.get(cpp)
             out.append('%s: "%s"' % (py_identifier(name), t.py_path if t else "Any"))
@@ -539,7 +650,8 @@ def render_stub(binder: Binder, globals_: Sequence[Tuple[str, str]] = ()) -> str
 # ---------------------------------------------------------------------------
 # Fragment CMake
 # ---------------------------------------------------------------------------
-def render_cmake(header: str, include_dirs: Sequence[str]) -> str:
+def render_cmake(header: str, include_dirs: Sequence[str],
+                 module_source: str = "scry_module.generated.cpp") -> str:
     dirs = "\n".join('    "%s"' % d.replace("\\", "/") for d in include_dirs)
     return """# =============================================================================
 #  Genere par Scry (scry gen --pybind). Ne pas editer a la main.
@@ -551,26 +663,30 @@ def render_cmake(header: str, include_dirs: Sequence[str]) -> str:
 #    find_package(pybind11 CONFIG REQUIRED)
 #    include(<dossier Generated>/scry_pybind.cmake)
 #
-#    # interpreteur embarque dans l'application :
-#    target_link_libraries(mon_app PRIVATE pybind11::embed)
-#    scry_pybind_setup(mon_app)
-#
-#    # ou module Python autonome :
-#    pybind11_add_module(mon_module bindings.cpp)
-#    scry_pybind_setup(mon_module)
+#    # interpreteur embarque dans l'application, module genere compris :
+#    scry_pybind_embed(mon_app)
 # =============================================================================
 
 set(SCRY_GENERATED_DIR "${CMAKE_CURRENT_LIST_DIR}")
 set(SCRY_PYBIND_HEADER "${CMAKE_CURRENT_LIST_DIR}/%s")
+set(SCRY_PYBIND_MODULE_SOURCE "${CMAKE_CURRENT_LIST_DIR}/%s")
 set(SCRY_SOURCE_INCLUDE_DIRS
 %s
 )
 
+# Includes seuls : pour qui ecrit son propre module avec register_all.
 function(scry_pybind_setup target)
     target_include_directories(${target} PRIVATE ${SCRY_GENERATED_DIR} ${SCRY_SOURCE_INCLUDE_DIRS})
     target_compile_features(${target} PRIVATE cxx_std_17)
 endfunction()
-""" % (header, dirs)
+
+# Tout : includes, module embarque genere, interpreteur Python.
+function(scry_pybind_embed target)
+    scry_pybind_setup(${target})
+    target_sources(${target} PRIVATE ${SCRY_PYBIND_MODULE_SOURCE})
+    target_link_libraries(${target} PRIVATE pybind11::embed)
+endfunction()
+""" % (header, module_source, dirs)
 
 
 # ---------------------------------------------------------------------------
@@ -592,6 +708,46 @@ def cmake_name(cfg: Config) -> str:
     return cfg.get("pybind", "cmake", "scry_pybind.cmake")
 
 
+def module_source_name(cfg: Config) -> str:
+    return cfg.get("pybind", "module_source", "scry_module.generated.cpp")
+
+
+def select_variables(variables: Sequence[model.Variable], cfg: Config
+                     ) -> List[model.Variable]:
+    """[pybind] expose et hide : motifs glob sur le nom qualifie.
+
+    expose vide ou absent : tout. hide l'emporte sur expose.
+    """
+    import fnmatch
+    expose = cfg.get_list("pybind", "expose") or ["*"]
+    hide = cfg.get_list("pybind", "hide")
+    return [v for v in variables
+            if any(fnmatch.fnmatchcase(v.qualified_name, p) for p in expose)
+            and not any(fnmatch.fnmatchcase(v.qualified_name, p) for p in hide)]
+
+
+def render_module(cfg: Config) -> str:
+    return """// =============================================================================
+//  Genere par Scry (scry gen --pybind). Ne pas editer a la main.
+//
+//  Module Python embarque '%(module)s' : tous les types et toutes les
+//  variables globales des headers, par reference. A compiler dans
+//  l'application, avec pybind11::embed. Un script embarque fait alors :
+//
+//      import %(module)s
+//      %(module)s.<namespace>.<variable>.<membre> = 3.0   # ecrit en place
+// =============================================================================
+#include "%(header)s"
+
+#include <pybind11/embed.h>
+
+PYBIND11_EMBEDDED_MODULE(%(module)s, m)
+{
+    %(ns)s::bind::register_all(m);
+}
+""" % {"module": module_name(cfg), "header": header_name(cfg), "ns": cfg.cpp_namespace}
+
+
 def stub_globals(cfg: Config) -> List[Tuple[str, str]]:
     """[pybind] globals = inputs: testgen::SensorSample; outputs: ..."""
     out = []
@@ -602,12 +758,20 @@ def stub_globals(cfg: Config) -> List[Tuple[str, str]]:
     return out
 
 
-def build_context(structs: Sequence[model.Struct], cfg: Config, header=None) -> Dict:
-    binder = Binder(structs)
+def build_context(structs: Sequence[model.Struct], cfg: Config, header=None,
+                  variables: Sequence[model.Variable] = ()) -> Dict:
+    selected = select_variables(variables, cfg)
+    binder = Binder(structs, selected)
+    # Headers des structures, plus ceux qui ne declarent que des variables.
+    sources = generator.source_headers(list(structs), cfg, header)
+    for v in selected:
+        name = os.path.basename(v.header) if v.header else ""
+        if name and name not in sources:
+            sources.append(name)
     return {
         "binder": binder,
         "namespace": cfg.cpp_namespace,
-        "source_headers": generator.source_headers(list(structs), cfg, header),
+        "source_headers": sources,
         "emit_abi_checks": cfg.emit_abi_checks,
         "abi_header": cfg.abi_header,
         "compiler": cfg.compiler,
@@ -622,33 +786,38 @@ def build_context(structs: Sequence[model.Struct], cfg: Config, header=None) -> 
         "namespaces": binder.namespaces,
         "views": [{"alias": t.alias, "name": name} for t, name in binder.views],
         "hashes": binder.root_hashes(),
+        "globals": binder.globals,
     }
 
 
-def render(structs: Sequence[model.Struct], cfg: Optional[Config] = None, header=None) -> str:
+def render(structs: Sequence[model.Struct], cfg: Optional[Config] = None, header=None,
+           variables: Sequence[model.Variable] = ()) -> str:
     cfg = cfg or load_config()
     return generator.environment().get_template("pybind.h.j2").render(
-        **build_context(structs, cfg, header))
+        **build_context(structs, cfg, header, variables))
 
 
 def generate(structs: Sequence[model.Struct], cfg: Optional[Config] = None,
-             header=None) -> List[str]:
-    """Ecrit le header de bindings, le stub .pyi et le fragment CMake."""
+             header=None, variables: Sequence[model.Variable] = ()) -> List[str]:
+    """Ecrit le header de bindings, le module embarque, le stub .pyi et le
+    fragment CMake."""
     cfg = cfg or load_config()
     structs = list(structs)
     written = []
     if cfg.emit_abi_checks:
         written.append(generator.generate_abi(structs, cfg, header=header))
-    context = build_context(structs, cfg, header)
+    context = build_context(structs, cfg, header, variables)
     text = generator.environment().get_template("pybind.h.j2").render(**context)
     written.append(generator._write(cfg, header_name(cfg), text))
+    written.append(generator._write(cfg, module_source_name(cfg), render_module(cfg)))
     written.append(generator._write(cfg, stub_name(cfg),
                                     render_stub(context["binder"], stub_globals(cfg))))
     dirs = []
-    for s in structs:
-        d = os.path.dirname(os.path.abspath(s.header)) if s.header else ""
+    for origin in [s.header for s in structs] + [v.header for v in variables]:
+        d = os.path.dirname(os.path.abspath(origin)) if origin else ""
         if d and d not in dirs:
             dirs.append(d)
     dirs += [d for d in cfg.include_paths if d not in dirs]
-    written.append(generator._write(cfg, cmake_name(cfg), render_cmake(header_name(cfg), dirs)))
+    written.append(generator._write(cfg, cmake_name(cfg),
+                                    render_cmake(header_name(cfg), dirs, module_source_name(cfg))))
     return written

@@ -10,7 +10,7 @@ de l'application. Il n'y a ni IPC, ni copie, ni modification des structs.
  ┌──────────────┬──────────────┬──────────────────────────────────┐
  │ acquisition  │ code métier  │ étape autotest : host.tick()      │
  │              │              │   le scénario reprend, lit        │
- │              │              │   sut.telemetry, écrit sut.sensor │
+ │              │              │   lit et écrit sut.app.g_sensor…  │
  └──────────────┴──────────────┴──────────────────────────────────┘
           même process, même thread, pointeurs directs
 ```
@@ -19,8 +19,7 @@ Les rôles se répartissent ainsi :
 
 | Pièce | Rôle | Écrit par |
 |---|---|---|
-| `scry gen --pybind` | bindings pybind11 de **tous** les types des headers | généré par Scry |
-| `autotest_glue.cpp` | module `sut` : quelles globales les scénarios voient | vous, une dizaine de lignes |
+| `scry gen --pybind` | bindings pybind11 de **tous** les types et de **toutes** les variables globales des headers, et le module `sut` complet | généré par Scry |
 | `cpp/autotest_embed.h` | interpréteur embarqué, un `tick()` par cycle | fourni |
 | `python/autotest/` | runtime des scénarios : `Runner`, `cycles`, `until`, `expect`… | fourni |
 | `scenarios/test_*.py` | les tests | vous |
@@ -28,10 +27,12 @@ Les rôles se répartissent ainsi :
 ## La démo
 
 ```bash
-autotest\run_demo.bat
+autotest/run_demo.sh        # Linux, macOS
+autotest\run_demo.bat       # Windows
 ```
 
-Le script génère les bindings, construit `demo/legacy_app.exe` avec CMake et
+Le script génère les bindings et le module `sut` à partir de
+`demo/legacy_app.h`, construit `demo/legacy_app` avec CMake et
 lance les scénarios de `demo/scenarios/`. `test_echec_volontaire.py` échoue
 exprès : l'échec apparaît dans le rapport sans arrêter l'application, et le
 code de sortie vaut 1. Le rapport JUnit est écrit dans
@@ -55,21 +56,13 @@ Les réglages vont dans la section `[pybind]` de `scry.ini` : `module` (nom du
 module dans le stub) et `globals` (instances annoncées dans le stub, par
 exemple `sensor: testgen::SensorSample; telemetry: testgen::TelemetryFrame`).
 
-**2. Écrire le module `sut`**, la seule partie propre au projet :
-
-```cpp
-#include "legacy_app.h"
-#include "scry_pybind.generated.h"
-#include <pybind11/embed.h>
-
-PYBIND11_EMBEDDED_MODULE(sut, m) {
-    scry::bind::register_types(m);                       // tous les types
-    const auto ref = py::return_value_policy::reference; // pas de copie
-    m.attr("sensor")    = py::cast(&app::g_sensor, ref);
-    m.attr("telemetry") = py::cast(&app::g_telemetry, ref);
-    m.def("reset", &app::reset);                         // fonctions aussi
-}
-```
+**2. Le module `sut` est généré** (`scry_module.generated.cpp`). Chaque
+variable globale des headers y est, par référence, sous son namespace C++ :
+`extern SensorSample g_sensor;` dans `namespace app` devient
+`sut.app.g_sensor`. Les variables `static` ne sont jamais exposées, et
+`[pybind] expose` / `hide` filtrent par nom qualifié. Pour exposer en plus un
+objet qui n'est pas une variable globale, écrivez votre propre module avec
+`register_all(m)` puis `m.attr("nom") = py::cast(&objet, py::return_value_policy::reference)`.
 
 N'exposez que des objets qui vivent aussi longtemps que l'interpréteur
 (globales, singletons), jamais une variable locale au cycle.
@@ -102,9 +95,7 @@ if(LEGACY_AUTOTEST)
     set(PYBIND11_FINDPYTHON ON)
     find_package(pybind11 CONFIG REQUIRED)
     include("${SCRY_GENERATED_DIR}/scry_pybind.cmake")
-    target_sources(mon_app PRIVATE autotest_glue.cpp)
-    target_link_libraries(mon_app PRIVATE pybind11::embed)
-    scry_pybind_setup(mon_app)
+    scry_pybind_embed(mon_app)      # includes, module sut genere, pybind11::embed
     target_compile_definitions(mon_app PRIVATE LEGACY_AUTOTEST=1)
 endif()
 ```
@@ -125,16 +116,16 @@ from autotest import scenario, cycles, until, expect, check, record, snapshot, d
 async def montee_puis_croisiere(sut):
     """La docstring sert de description."""
     Phase = sut.testgen.FlightPlan.Phase
-    sut.target.position.z = 3000.0
-    sut.sensor.valid = True
+    sut.app.g_target.position.z = 3000.0
+    sut.app.g_sensor.valid = True
 
-    phases = record("phase", lambda: sut.telemetry.phase.value)   # une valeur par cycle
+    phases = record("phase", lambda: sut.app.g_telemetry.phase.value)   # une valeur par cycle
     for altitude in range(0, 3001, 250):
-        sut.sensor.value = float(altitude)
+        sut.app.g_sensor.value = float(altitude)
         await cycles(1)
 
-    await until(lambda: sut.telemetry.phase == Phase.Cruise, timeout=5)
-    expect(sut.plan.payload.halves.lo, "altitude publiee").eq(3000)
+    await until(lambda: sut.app.g_telemetry.phase == Phase.Cruise, timeout=5)
+    expect(sut.app.g_plan.payload.halves.lo, "altitude publiee").eq(3000)
 ```
 
 | API | Rôle |
@@ -170,11 +161,19 @@ contient `vol` ; la démo passe `argv[1]` à ce filtre.
 | autres STL, statiques, non publics | absents, avec un commentaire dans le header généré |
 | membre nommé comme un mot-clé Python | suffixe `_` : `from` devient `from_` |
 
+| variable globale `ns::g` | propriété `sut.ns.g` : lue et écrite en place, même scalaire |
+| variable globale `const` | lecture seule |
+| pointeur global vers une structure décrite | vue typée sur l'objet pointé, ou `None` |
+
 Chaque classe expose aussi `to_dict()`, `__scry_fields__`, `__scry_layout__`
-(sizeof, offsets, empreinte), `from_address(int)` et, pour les types
-trivialement copiables, `from_buffer(buffer, offset=0)` et `to_bytes()`.
-Écrire un attribut qui n'existe pas lève `AttributeError` : une faute de frappe
-ne passe pas inaperçue.
+(sizeof, offsets, empreinte) et `from_address(int)`. Écrire un attribut ou une
+variable qui n'existe pas lève `AttributeError` : une faute de frappe ne passe
+pas inaperçue.
+
+Coût d'un accès : de 60 ns (élément numpy) à 400 ns environ (écriture d'une
+globale scalaire). Un tick qui lit et écrit une dizaine de valeurs coûte
+quelques microsecondes. Le détail des mesures est dans le README principal,
+§ 8.
 
 ## Points de vigilance
 
@@ -197,6 +196,8 @@ ne passe pas inaperçue.
 
 - `pytest autotest/tests` : le runtime, avec une fausse application séquencée,
   sans compilation.
-- `SCRY_INTEGRATION=1 pytest tests/test_pybind_build.py` : compile un vrai
-  module à partir des bindings générés, écrit depuis Python et relit les
-  octets aux offsets du modèle.
+- `pytest tests/test_pybind_embed.py` : compile un hôte C++ qui embarque
+  Python et le module généré, exécute des scripts qui écrivent dans ses
+  structures et variables globales, puis relit les octets aux offsets du
+  modèle. Saute sans castxml, g++ ou libpython.
+- `autotest/run_demo.sh` : la démo complète, construite avec CMake.

@@ -95,7 +95,7 @@ scry json modele.json    exporte le modèle brut
 scry ui                  visualiseur ImGui
 scry verify              compile les assertions ABI avec cl, pour chaque profil de build
 scry viewer --run        compile et lance le visualiseur C++ natif (ImGui, DirectX 11)
-scry gen --pybind        ajoute les bindings pybind11, le stub .pyi et le fragment CMake
+scry gen --pybind        ajoute les bindings pybind11 : types, variables globales, module embarqué
 ```
 
 Options communes : `-H / --header` cible un autre header, `-c / --config` un
@@ -378,31 +378,86 @@ architectures qui l'exigent.
 
 ---
 
-## 8. Bindings pybind11 et autotest Python embarqué
+## 8. Python embarqué : bindings pybind11 générés
 
-`scry gen --pybind` génère des bindings pybind11 pour tous les types des
-headers. Ce sont des **vues** sur la mémoire C++ : depuis Python, écrire un
-attribut écrit dans le programme. Le header généré inclut les `static_assert`
-d'ABI : il ne compile que si le layout du modèle est bien celui du compilateur.
+Cas visé : une application C++ (un simulateur par exemple) embarque un
+interpréteur Python, et des scripts lisent et modifient ses interfaces **dans
+son propre cycle**, sans IPC ni copie. Tout le code de liaison est généré par
+Scry depuis les headers, sans les modifier :
 
-Le dossier [autotest/](autotest/README.md) s'en sert pour embarquer un
-interpréteur Python dans une application séquencée. À chaque cycle, après le
-code métier, des scénarios Python (`async def`, `await cycles(n)`,
-`expect(...)`) positionnent des entrées et vérifient des sorties directement
-dans ses structures. Il n'y a pas d'IPC, et l'étape du séquenceur garantit la
-cohérence. `autotest\run_demo.bat` construit et lance une démo complète avec
-CMake.
+```
+scry gen --pybind -H app/interfaces.h
+```
 
-Ce qu'il faut savoir côté Scry :
+| Fichier généré | Rôle |
+|---|---|
+| `scry_pybind.generated.h` | `register_types` (tous les types), `register_globals` (toutes les variables globales), `register_all` |
+| `scry_module.generated.cpp` | le module embarqué complet : `PYBIND11_EMBEDDED_MODULE(sut, m) { register_all(m); }` |
+| `sut.pyi` | stub pour l'autocomplétion, variables comprises |
+| `scry_pybind.cmake` | `scry_pybind_embed(mon_app)` : includes, module, `pybind11::embed` |
 
-- **Modèle.** Il porte maintenant les types qualifiés (`qualified_type`), les
-  vraies valeurs des enums (`enum_items`) et une empreinte de layout
-  (`layout_hash`, FNV-1a 64 bits), identique en C++, en Python et dans le JSON.
-- **Sortie.** La section `[pybind]` de `scry.ini` règle les noms des fichiers
-  produits et les instances annoncées dans le stub `.pyi`.
-- **Test lent.** `SCRY_INTEGRATION=1 pytest tests/test_pybind_build.py`
-  compile un vrai module et vérifie, octet par octet, que les écritures faites
-  par Python tombent aux offsets du modèle.
+Côté application, il ne reste qu'à démarrer l'interpréteur et appeler un
+script à chaque cycle (voir [autotest/](autotest/README.md) pour un hôte
+complet, `autotest_embed.h`) :
+
+```cpp
+extern Etat g_etat;               // dans interfaces.h, défini par l'appli
+py::scoped_interpreter python;    // une fois
+py::object step = py::module_::import("script").attr("step");
+for (;;) { simulation(); step(); }
+```
+
+```python
+import sut
+etat = sut.sim.g_etat          # vue typée sur sim::g_etat : aucune copie
+def step():
+    etat.moteur.regime += 10   # écrit dans la mémoire C++
+    sut.sim.g_temps            # scalaire global : relu à chaque accès
+```
+
+**Ce que Python voit.** Une variable globale devient une propriété du module
+de son namespace (`sim::g_etat` → `sut.sim.g_etat`). Une structure est une vue
+par référence, un scalaire ou une enum se lit et s'écrit en place. Un tableau
+numérique est une vue numpy sans copie, un tableau de structures une séquence
+d'éléments par référence, un `char[N]` une `str` dont la longueur est vérifiée.
+Un pointeur vers une structure décrite donne une vue typée sur l'objet pointé,
+ou `None`. Une variable `const` est en lecture seule. Écrire un nom inconnu
+lève `AttributeError` : une faute de frappe ne crée pas un attribut qui
+n'écrit nulle part. Les variables `static` d'un header ne sont jamais
+exposées, car chaque unité de compilation en a sa propre copie.
+`[pybind] expose` et `hide` filtrent par motif sur le nom qualifié.
+
+**Coût, mesuré** (g++ -O2, Python 3.11, un cœur de serveur ; ordres de
+grandeur) :
+
+| Accès | Coût |
+|---|---|
+| élément d'une vue numpy (`v[1] = 2.0`) | ~60 ns |
+| lecture d'une globale scalaire (`sut.sim.g_temps`) | ~110 ns |
+| membre d'une vue gardée (`etat.mode = 1`) | ~220 ns |
+| chemin complet (`sut.sim.g_etat.mode = 1`) | ~360 ns |
+| écriture d'une globale scalaire | ~420 ns |
+| un cycle type : 5 lectures, 5 écritures, un pointeur suivi | ~4 µs |
+
+Dans une boucle de 20 ms, c'est négligeable. Pour les scripts chauds, garder
+les vues dans des variables (`etat = sut.sim.g_etat`) plutôt que de refaire
+le chemin à chaque cycle.
+
+**Garde-fous.** Le header généré inclut les `static_assert` d'ABI : il ne
+compile que si le layout du modèle est celui du compilateur. Le modèle porte
+aussi les types qualifiés, les vraies valeurs des enums et une empreinte de
+layout (`layout_hash`, FNV-1a 64 bits), identique en C++, en Python et dans le
+JSON.
+
+**Tests.** `tests/test_pybind_embed.py` compile un hôte C++ qui embarque
+Python et le module généré (`tests/cpp/pybind_host.cpp`). Il exécute des
+scripts, puis relit les octets des structures C++ aux offsets du modèle. Il
+saute sans castxml, g++ ou libpython.
+
+**Autotest.** Le dossier [autotest/](autotest/README.md) bâtit là-dessus un
+runtime de scénarios (`async def`, `await cycles(n)`, `expect(...)`) piloté
+par le séquenceur de l'application. `autotest/run_demo.sh` (Linux) ou
+`autotest\run_demo.bat` (Windows) construit et lance la démo avec CMake.
 
 ---
 

@@ -98,3 +98,77 @@ def test_stub_pyi():
     assert '        mode: "ns.Mode"' in stub
     assert 'inputs: "ns.S"' in stub
     compile(stub, "sut.pyi", "exec")          # syntaxe Python valide
+
+
+# -- variables globales ----------------------------------------------------------
+def V(qualified, field, is_const=False):
+    field.access_path = qualified
+    return model.Variable(name=qualified.rpartition("::")[2], qualified_name=qualified,
+                          field=field, is_const=is_const, header="app/vars.h")
+
+
+def _variables():
+    s = _struct()
+    return s, [
+        V("app::g_s", F("g_s", 0, 160, model.STRUCT, "S", qualified_type="ns::S",
+                        children=list(s.fields))),
+        V("app::g_t", F("g_t", 0, 8, type_name="double")),
+        V("app::g_mode", F("g_mode", 0, 1, model.ENUM, "Mode", enum_type="ns::Mode",
+                           enum_items=[("Off", 0), ("On", 10)], qualified_type="ns::Mode")),
+        V("app::g_v", F("g_v", 0, 24, model.ARRAY, "double [3]", array_len=3, elem_type="double")),
+        V("app::g_name", F("g_name", 0, 8, model.ARRAY, "char [8]", array_len=8, elem_type="char")),
+        V("app::g_ptr", F("g_ptr", 0, 8, model.POINTER, "ns::S *", qualified_type="ns::S")),
+        V("app::g_raw", F("g_raw", 0, 8, model.POINTER, "void *")),
+        V("app::sub::g_n", F("g_n", 0, 4), is_const=True),
+        V("g_racine", F("g_racine", 0, 4, type_name="float")),
+        V("app::g_list", F("g_list", 0, 24, model.CLASS, "vector<int>",
+                           qualified_type="std::vector<int>")),
+    ]
+
+
+def test_globales_une_propriete_par_nature():
+    s, variables = _variables()
+    text = pybind.render([s], load_config(EXAMPLE_INI), variables=variables)
+    expected = [
+        'globals.object("app", "g_s", []() -> auto& { return ::app::g_s; });',
+        'globals.value("app", "g_t", []() -> auto& { return ::app::g_t; });',
+        'globals.value("app", "g_mode", []() -> auto& { return ::app::g_mode; });',
+        'globals.numeric("app", "g_v", []() -> auto& { return ::app::g_v; });',
+        'globals.text("app", "g_name", []() -> auto& { return ::app::g_name; });',
+        'globals.pointee("app", "g_ptr", []() -> auto& { return ::app::g_ptr; });',
+        'globals.address("app", "g_raw", []() -> auto& { return ::app::g_raw; });',
+        'globals.value("app::sub", "g_n", []() -> auto& { return ::app::sub::g_n; });',
+        'globals.value("", "g_racine", []() -> auto& { return ::g_racine; });',
+        "// app::g_list : std::vector non liee (STL, pas un POD)",
+    ]
+    for line in expected:
+        assert line in text, line
+    assert "inline void register_all(py::module_& m)" in text
+    # Plus de chemin 'buffer Python' : les vues ne visent que la memoire C++.
+    assert "from_buffer" not in text and "to_bytes" not in text
+
+
+def test_filtres_expose_et_hide(tmp_path):
+    _, variables = _variables()
+    ini = tmp_path / "scry.ini"
+    ini.write_text("[pybind]\nexpose = app::*\nhide = app::g_raw; *::sub::*\n",
+                   encoding="utf-8")
+    kept = [v.qualified_name for v in pybind.select_variables(variables, load_config(ini))]
+    assert "g_racine" not in kept and "app::g_raw" not in kept and "app::sub::g_n" not in kept
+    assert "app::g_s" in kept
+    assert len(pybind.select_variables(variables, load_config(EXAMPLE_INI))) == len(variables)
+
+
+def test_stub_et_module_embarque():
+    s, variables = _variables()
+    binder = pybind.Binder([s], variables)
+    stub = pybind.render_stub(binder)
+    assert 'g_s: "ns.S"' in stub
+    assert 'g_mode: "ns.Mode"' in stub
+    assert 'g_ptr: "Optional[ns.S]"' in stub
+    assert 'g_n: "int"  # const' in stub
+    assert "class sub:  # namespace app::sub" in stub
+    source = pybind.render_module(load_config(EXAMPLE_INI))
+    assert "PYBIND11_EMBEDDED_MODULE(sut, m)" in source
+    assert "scry::bind::register_all(m);" in source
+    assert '#include "scry_pybind.generated.h"' in source

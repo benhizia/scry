@@ -6,6 +6,8 @@
 #        -DPython_EXECUTABLE=<python du venv>
 #  cmake --build build --config Release
 #
+#  Linux : autotest/run_demo.sh fait tout. Windows : autotest\run_demo.bat.
+#
 #  Release : le modele Scry decrit un build /MD. En Debug (/MDd), la STL change
 #  de taille et les static_assert d'ABI des bindings refusent de compiler,
 #  sauf a regenerer avec [castxml] cl_flags = /MDd.
@@ -42,9 +44,9 @@ if(LEGACY_AUTOTEST)
     # Fragment genere par Scry : includes des headers sources et du dossier genere.
     include("${SCRY_GENERATED_DIR}/scry_pybind.cmake")
 
-    target_sources(legacy_app PRIVATE autotest_glue.cpp)
-    target_link_libraries(legacy_app PRIVATE pybind11::embed)
-    scry_pybind_setup(legacy_app)
+    # Module 'sut' genere : tous les types et toutes les variables globales de
+    # legacy_app.h, par reference. Aucune glue a ecrire.
+    scry_pybind_embed(legacy_app)
     target_include_directories(legacy_app PRIVATE "${DEMO_ROOT}/autotest/cpp")
     target_compile_definitions(legacy_app PRIVATE
         LEGACY_AUTOTEST=1

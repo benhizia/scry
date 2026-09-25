@@ -133,6 +133,8 @@ class Introspector(object):
         self.cfg = cfg or load_config()
         self._xml_config = None
         self.report = ParseReport()
+        self.variables = []  # type: List[model.Variable]
+        self._variables_of = {}  # type: Dict[str, List[model.Variable]]
 
     # -- configuration ------------------------------------------------------
     def xml_config(self):
@@ -229,8 +231,13 @@ class Introspector(object):
 
     # -- parsing ------------------------------------------------------------
     def parse(self, headers=None) -> List[model.Struct]:
-        """Parse un ou plusieurs headers et retourne le modele fusionne."""
+        """Parse un ou plusieurs headers et retourne le modele fusionne.
+
+        Les variables globales des memes headers sont dans self.variables.
+        """
         self.report = ParseReport()
+        self.variables = []  # type: List[model.Variable]
+        seen_variables = set()
         files = self.resolve_headers(headers)
 
         cache = self._open_cache()
@@ -249,6 +256,11 @@ class Introspector(object):
             self.report.parsed.append(full)
             for struct in structs:
                 self._merge(merged, order, struct, full)
+            # Une variable vue depuis deux headers est la meme : la premiere suffit.
+            for var in self._variables_of.pop(full, []):
+                if var.qualified_name not in seen_variables:
+                    seen_variables.add(var.qualified_name)
+                    self.variables.append(var)
 
         if cache is not None:
             cache.flush()
@@ -272,7 +284,62 @@ class Introspector(object):
         """Parse un seul header. Sert aussi de point d'entree pour les tests."""
         decls = self._read_declarations(full, cache)
         global_ns = declarations.get_global_namespace(decls)
+        self._variables_of[full] = [self.build_variable(v)
+                                    for v in self._root_variables(global_ns, full)]
         return [self.build_struct(cls) for cls in self._root_classes(global_ns, full)]
+
+    # -- variables globales --------------------------------------------------
+    def _root_variables(self, global_ns, header_full: str):
+        """Variables de namespace declarees dans le header (ou root_globs).
+
+        Ecartees : les 'static', a liaison interne, dont chaque unite de
+        compilation a sa copie ; les membres de classe, qui sont des champs.
+        Gardees : 'extern', 'inline', et les constantes, en lecture seule.
+        """
+        target = _norm(header_full)
+        patterns = self._root_patterns()
+        out = []
+        for var in global_ns.variables(allow_empty=True, recursive=True):
+            if not isinstance(var.parent, declarations.namespace_t) or not var.name:
+                continue
+            loc = getattr(var, "location", None)
+            if loc is None:
+                continue
+            where = _norm(loc.file_name)
+            if where != target and not self._matches(where, patterns):
+                continue
+            if getattr(var.type_qualifiers, "has_static", False):
+                continue
+            out.append(var)
+        out.sort(key=_qualified_name)
+        return out
+
+    def build_variable(self, var) -> model.Variable:
+        qualified = _qualified_name(var)
+        fld = self._build_field(var, base_offset=0, path="", depth=0, seen=(),
+                                is_static=False)
+        fld.offset = fld.abs_offset = 0
+        # Chemin d'acces : le nom qualifie, puis celui des enfants.
+        self._reroot(fld, qualified)
+        t = declarations.remove_alias(var.decl_type)
+        return model.Variable(
+            name=var.name,
+            qualified_name=qualified,
+            field=fld,
+            is_const=declarations.is_const(t),
+            header=getattr(getattr(var, "location", None), "file_name", ""),
+        )
+
+    @staticmethod
+    def _reroot(fld: model.Field, path: str):
+        """Remplace le prefixe '.nom' des chemins d'acces par path."""
+        old = fld.access_path
+        stack = [fld]
+        while stack:
+            f = stack.pop()
+            if f.access_path.startswith(old):
+                f.access_path = path + f.access_path[len(old):]
+            stack.extend(f.children)
 
     def _open_cache(self):
         """Cache pygccxml, un fichier par configuration de compilateur.
@@ -365,9 +432,7 @@ class Introspector(object):
         # normcase des deux cotes : sous Windows il abaisse la casse, ailleurs
         # il est neutre. Melanger normcase et lower() casse la comparaison sur
         # les systemes sensibles a la casse.
-        patterns = [os.path.normcase(os.path.abspath(p)) if os.path.isabs(p)
-                    else os.path.normcase(p.replace("/", os.sep))
-                    for p in self.root_globs]
+        patterns = self._root_patterns()
 
         out = []
         for cls in global_ns.classes(allow_empty=True):
@@ -387,6 +452,13 @@ class Introspector(object):
 
         out.sort(key=_qualified_name)
         return out
+
+    def _root_patterns(self) -> List[str]:
+        # normcase des deux cotes : sous Windows il abaisse la casse, ailleurs
+        # il est neutre.
+        return [os.path.normcase(os.path.abspath(p)) if os.path.isabs(p)
+                else os.path.normcase(p.replace("/", os.sep))
+                for p in self.root_globs]
 
     @staticmethod
     def _matches(path: str, patterns: Sequence[str]) -> bool:
@@ -523,6 +595,16 @@ class Introspector(object):
         if declarations.is_pointer(t) or declarations.is_reference(t):
             fld.kind = model.POINTER
             fld.size = size or None
+            # Classe pointee, sans y descendre : les bindings peuvent alors
+            # rendre une vue typee sur l'objet pointe plutot qu'une adresse.
+            pointee = declarations.remove_cv(declarations.remove_alias(
+                declarations.remove_reference(declarations.remove_pointer(t))))
+            if declarations.is_class(pointee) and not declarations.is_pointer(pointee):
+                try:
+                    fld.qualified_type = _qualified_name(
+                        declarations.class_traits.get_declaration(pointee))
+                except Exception:
+                    pass
             if not self.cfg.follow_pointers:
                 fld.truncated = "pointer"
                 return

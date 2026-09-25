@@ -1,11 +1,15 @@
 #pragma once
 //
 // pybind_cases.h : cas couverts par les bindings pybind11 generes et absents
-// des headers d'essai de Data/. Utilise par tests/test_pybind_build.py.
+// des headers d'essai de Data/, plus des variables globales de chaque nature.
+// Utilise par tests/test_pybind_embed.py, qui les definit dans un hote C++
+// (tests/cpp/pybind_host.cpp) et les modifie depuis Python embarque.
 //
 
 #include <array>
 #include <cstdint>
+
+#include "test_structs_complexe.h"
 
 namespace cases {
 
@@ -42,5 +46,20 @@ struct Sample
         std::uint16_t hi;
     } pair;
 };
+
+// Variables globales : exposees par reference dans le module embarque.
+extern Sample g_sample;                 // structure : vue
+extern Sample* g_current;               // pointeur : vue sur l'objet pointe, ou None
+extern Speed g_speed;                   // enum
+extern double g_gains[3];               // tableau numerique : vue numpy
+extern char g_callsign[8];              // chaine
+extern const int g_version;             // constante : lecture seule
+extern testgen::FlightPlan g_plan;      // structure avec STL, tableaux de structs
+extern testgen::SensorSample g_sensors[4];  // tableau de structures
+static int s_internal = 0;              // static : jamais expose
+
+namespace inner {
+extern std::uint32_t g_ticks;           // namespace imbrique : sut.cases.inner
+}
 
 }  // namespace cases
