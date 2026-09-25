@@ -118,6 +118,14 @@ def test_decode_enum_hors_plage_reste_numerique():
     assert memory.decode(src(_struct.pack("<i", 9)), fld) == "9"
 
 
+def test_decode_enum_valeurs_reelles_non_contigues():
+    # Fast = 10 : l'ancien decodage par index aurait rendu "10".
+    fld = field("e", 0, 1, kind=model.ENUM, type_name="Vitesse",
+                enum_items=[("Off", 0), ("Fast", 10)])
+    assert memory.decode(src(b"\x0a"), fld) == "Fast (10)"
+    assert memory.decode(src(b"\x03"), fld) == "3"
+
+
 def test_decode_pointeur_en_hexadecimal():
     fld = field("p", 0, 8, kind=model.POINTER, type_name="int *")
     got = memory.decode(src(_struct.pack("<Q", 0xDEADBEEF)), fld)

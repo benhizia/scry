@@ -186,6 +186,25 @@ def test_printf_for_tolere_les_espaces():
     assert model.printf_for("  double  ")[0] == "%.6g"
 
 
+def test_layout_hash_stable_et_sensible_au_layout():
+    def s(order):
+        return Struct(name="S", size=8, align=4, fields=[
+            f(n, i * 4, 4, access_path="obj." + n) for i, n in enumerate(order)])
+    assert s("xy").layout_hash == s("xy").layout_hash
+    assert s("xy").layout_hash != s("yx").layout_hash
+    assert s("xy").to_dict()["layout_hash"] == "0x%016X" % s("xy").layout_hash
+
+
+def test_enum_cases_valeurs_reelles_signees_sans_alias():
+    fld = f("e", 0, 1, kind=model.ENUM,
+            enum_items=[("A", 1), ("B", 4), ("Alias", 4), ("Max", 255)])
+    assert model.enum_cases(fld) == [(1, "A"), (4, "B"), (-1, "Max")]
+    assert model.enum_name(fld, -1) == "Max"
+    assert model.enum_name(fld, 2) is None
+    # Sans valeurs connues : les noms seuls, numerotes a partir de 0.
+    assert model.enum_name(f("g", 0, 4, kind=model.ENUM, enum_values=["X", "Y"]), 1) == "Y"
+
+
 def test_canonical_type_ramene_les_alias_standard():
     assert model.canonical_type("::uint64_t") == "long long unsigned int"
     assert model.canonical_type("std::int16_t") == "short int"

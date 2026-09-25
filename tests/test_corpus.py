@@ -160,3 +160,29 @@ def test_heritage(tmp_path):
     assert structs["FromInline"].inline_constructible
     # Base privee masquee sans include_non_public.
     assert top("PrivateBase") == [("pb", 16, 4)]
+
+
+# -- bindings pybind11 generes, compiles pour chaque header -------------------
+@pytest.mark.parametrize("header", CORPUS, ids=[h.name for h in CORPUS])
+def test_bindings_pybind_compilent(tmp_path, header):
+    """Module embarque genere (types et variables globales), membres non
+    publics compris dans le modele : il doit compiler sans avertissement."""
+    import sysconfig
+
+    pybind11 = pytest.importorskip("pybind11")
+    include = sysconfig.get_paths()["include"]
+    if not (Path(include) / "Python.h").is_file():
+        pytest.skip("Python.h absent")
+    from scry.codegen import pybind
+
+    cfg = _cfg(tmp_path, True)
+    introspector = Introspector(cfg)
+    structs = introspector.parse(str(header))
+    assert not introspector.report.failures, introspector.report.lines()
+    pybind.generate(structs, cfg, variables=introspector.variables)
+    cmd = ["g++", "-std=c++17", "-fsyntax-only", "-Wall", "-Wextra", "-Werror",
+           "-Wno-unused-variable", "-I%s" % (tmp_path / "out"), "-I%s" % header.parent,
+           "-I%s" % pybind11.get_include(), "-I%s" % include,
+           str(tmp_path / "out" / pybind.module_source_name(cfg))]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr[-4000:]

@@ -138,3 +138,19 @@ profiles = release: /MD; debug: /MDd
 gnu_profiles = release: -O2; debug: -D_GLIBCXX_DEBUG
 ; Compilateur des profils gnu. Vide = g++ pour gcc, clang++ pour clang.
 cxx =
+
+[pybind]
+; 'scry gen --pybind' : bindings pybind11 pour un interpreteur Python embarque
+; dans l'application. Tous les types, et toutes les variables globales des
+; headers, par reference.
+; Nom du module embarque, importe par les scripts : import sut
+module = sut
+; Variables globales exposees, motifs glob sur le nom qualifie, separes par
+; des ;  Vide = toutes. hide l'emporte sur expose.
+;   expose = sim::*; moteur::g_*
+expose =
+hide =
+; Instances exposees a la main (hors variables globales), annoncees dans le
+; stub .pyi pour l'autocompletion. Format 'nom: type'.
+;   globals = moteur: sim::Moteur
+globals =

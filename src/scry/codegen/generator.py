@@ -56,6 +56,9 @@ def field_context(fld: model.Field) -> Dict:
         "printf_fmt": fmt[0] if fmt else None,
         "printf_expr": fmt[1] if fmt else None,
         "color": "detail::" + _KIND_COLORS.get(fld.kind, "kColorDefault"),
+        "qualified_type": fld.qualified_type,
+        "enum_type": fld.enum_type,
+        "enum_cases": model.enum_cases(fld) if fld.kind == model.ENUM else [],
     }
     # Lignes du tree-table : membres et trous de padding, dans l'ordre des
     # offsets, comme dans l'IHM Python.
@@ -137,6 +140,7 @@ def struct_context(struct_info: model.Struct, cfg: Config) -> Dict:
         # offsetof est une macro : la virgule de RingBuffer<T, 8> couperait son
         # premier argument en deux. Les assertions passent par cet alias.
         "alias": "abi_%s" % _cpp_identifier(struct_info.name),
+        "layout_hash": "0x%016X" % struct_info.layout_hash,
         "kind": struct_info.kind,
         "size": struct_info.size,
         "align": struct_info.align,
@@ -210,6 +214,11 @@ def render(structs: List[model.Struct], cfg: Optional[Config] = None,
 
 def render_template(template_name: str, context: Dict) -> str:
     """Rend un template du paquet avec un contexte deja construit."""
+    return environment().get_template(template_name).render(**context)
+
+
+def environment() -> Environment:
+    """Environnement Jinja commun a tous les templates de Scry."""
     env = Environment(
         loader=FileSystemLoader(_templates_dir()),
         undefined=StrictUndefined,
@@ -223,7 +232,7 @@ def render_template(template_name: str, context: Dict) -> str:
     # Commentaire C++ d'une ligne : un antislash final prolongerait le
     # commentaire sur la ligne suivante du code genere.
     env.filters["ccomment"] = lambda s: " ".join(str(s).split()).rstrip("\\ ")
-    return env.get_template(template_name).render(**context)
+    return env
 
 
 def _write(cfg: Config, name: str, text: str) -> str:

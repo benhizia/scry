@@ -87,8 +87,15 @@ def cmd_dump(args, cfg):
                      field.abs_offset, field.size, note))
         print()
 
-    print("%d structure(s) depuis %d header(s)."
-          % (len(structs), len(introspector.report.parsed)))
+    if introspector.variables:
+        print("=== variables globales")
+        for v in introspector.variables:
+            print("  %-32s %-24s %-12s %s o%s"
+                  % (v.qualified_name, v.field.type_name, v.field.kind, v.field.size,
+                     "  const" if v.is_const else ""))
+        print()
+    print("%d structure(s), %d variable(s) globale(s) depuis %d header(s)."
+          % (len(structs), len(introspector.variables), len(introspector.report.parsed)))
     _print_report(introspector, args.verbose)
     return 1 if introspector.report.conflicts else 0
 
@@ -101,6 +108,12 @@ def cmd_gen(args, cfg):
     print("Ecrit : %s  (%d structures)" % (path, len(structs)))
     if cfg.emit_abi_checks:
         print("Ecrit : %s" % os.path.join(str(cfg.output_dir), cfg.abi_header))
+    if args.pybind:
+        from scry.codegen import pybind
+        for written in pybind.generate(structs, cfg, header=args.header,
+                                       variables=introspector.variables):
+            if not written.endswith(cfg.abi_header):
+                print("Ecrit : %s" % written)
     _print_report(introspector, args.verbose)
     return 1 if introspector.report.conflicts else 0
 
@@ -310,7 +323,10 @@ def main(argv=None):
     sub.add_parser("check", parents=[common],
                    help="verifie la configuration et l'outillage")
     sub.add_parser("dump", parents=[common], help="affiche l'arbre des structures")
-    sub.add_parser("gen", parents=[common], help="genere le header C++")
+    p_gen = sub.add_parser("gen", parents=[common], help="genere le header C++")
+    p_gen.add_argument("--pybind", action="store_true",
+                       help="genere aussi les bindings pybind11, le stub .pyi et le "
+                            "fragment CMake")
     p_json = sub.add_parser("json", parents=[common], help="exporte le modele en JSON")
     p_json.add_argument("out", nargs="?", default="modele.json")
     p_diff = sub.add_parser("diff", parents=[common],
