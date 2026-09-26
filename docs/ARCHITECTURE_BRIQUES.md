@@ -210,6 +210,9 @@ de celle de son descripteur refuse de décoder : c'est le même principe que les
 
 ---
 
+> Suite de l'analyse (SHM de pointeurs, rejeu à froid, réseau et
+> intermédiaire) : [ETUDE_ACQUISITION.md](ETUDE_ACQUISITION.md).
+
 ## 7. À trancher
 
 1. **Mémoire contiguë ou dispersée** dans ton simulateur ? Une SHM de 50 Mo
