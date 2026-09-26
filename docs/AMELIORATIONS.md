@@ -107,6 +107,7 @@ faiblesses dominent :
 | D2 | Cibles 32 bits et big-endian | Modèle | 2 | M | P3 |
 | D3 | Diff d'ABI : renommages et déplacements | Modèle | 2 | S | P3 |
 | D4 | Schéma JSON versionné du modèle | Modèle | 2 | S | P3 |
+| D5 | Glue pour l'outil d'acquisition : tables de canaux et d'adresses | Modèle | 4 | M | P2 |
 | E1 | Cache de parsing par défaut, mesuré et documenté | Adoption | 4 | S | P1 |
 | E2 | Bindings découpés en plusieurs unités de compilation | Adoption | 3 | M | P2 |
 | E3 | Paquet installable : wheel, castxml en dépendance | Adoption | 3 | S | P2 |
@@ -264,8 +265,10 @@ généré sans setter. Un mode `--read-only` pour les scripts d'observation.
 
 #### B7. Enregistrement et rejeu d'un vol · P2 · L
 
-> Le format de fichier découle de la trame commune étudiée dans
-> [ETUDE_SOURCES.md](ETUDE_SOURCES.md), § 8.
+> **Hors périmètre Scry** : relève de l'outil d'acquisition, voir
+> [ARCHITECTURE_BRIQUES.md](ARCHITECTURE_BRIQUES.md). Scry fournit la
+> description et la glue ; l'enregistrement sans perte et le rejeu temps réel
+> sont ailleurs.
 
 **Problème.** Reproduire un défaut vu en séance demande de refaire le vol.
 
@@ -331,8 +334,9 @@ s'évaluent sur les valeurs décodées.
 
 #### C5. Transport réseau · P3 · M
 
-> Approfondi dans [ETUDE_SOURCES.md](ETUDE_SOURCES.md) : sources et émetteurs
-> en plugins, trame commune, TCP ou UDP, gros volumes, schémas d'architecture.
+> **Hors périmètre Scry** : relève de l'outil d'acquisition, voir
+> [ARCHITECTURE_BRIQUES.md](ARCHITECTURE_BRIQUES.md) et l'étude
+> [ETUDE_SOURCES.md](ETUDE_SOURCES.md).
 
 **Problème.** La mémoire partagée impose la même machine.
 
@@ -380,6 +384,18 @@ en cascade derrière leur cause (« `drapeaux` inséré, 12 membres décalés de
 version 1) pour les outils tiers, et tester sa rétrocompatibilité.
 
 ---
+
+#### D5. Glue pour l'outil d'acquisition · P2 · M
+
+**Problème.** L'outil d'acquisition ne parse pas de headers : il lui faut une
+description compilée de ce qu'il doit lire.
+
+**Proposition.** Générer, depuis le modèle, des tables C++ : pour une mémoire
+contiguë, les canaux `{nom, offset, taille, layout_hash}` d'une struct racine ;
+pour une mémoire dispersée, les adresses `{nom, &variable, sizeof,
+layout_hash}` résolues par l'éditeur de liens, comme les bindings Python le
+font déjà. Détail dans [ARCHITECTURE_BRIQUES.md](ARCHITECTURE_BRIQUES.md), § 2
+et § 5.
 
 ### Axe E : adoption et intégration
 

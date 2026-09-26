@@ -5,6 +5,13 @@ octets que Scry décode peuvent venir d'une grosse mémoire partagée, du résea
 d'un fichier de rejeu, et d'autres origines encore. Comment l'architecturer ?
 Faut-il des plugins ? Que faire du fractionnement réseau et des gros volumes ?
 
+> **Périmètre révisé.** L'essentiel de cette étude (transport réseau,
+> multicast, enregistrement sans perte, rejeu, contre-pression) relève d'un
+> **outil d'acquisition distinct**, qui se sert de Scry sans en faire partie.
+> Voir [ARCHITECTURE_BRIQUES.md](ARCHITECTURE_BRIQUES.md). Dans Scry, il ne
+> reste que l'interface de plugin de source, minimale, pour que ses
+> visualiseurs lisent des données produites ailleurs.
+
 ---
 
 ## 1. Constat : l'origine des octets est câblée en dur, à trois endroits
