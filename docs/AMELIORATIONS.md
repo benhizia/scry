@@ -264,6 +264,9 @@ généré sans setter. Un mode `--read-only` pour les scripts d'observation.
 
 #### B7. Enregistrement et rejeu d'un vol · P2 · L
 
+> Le format de fichier découle de la trame commune étudiée dans
+> [ETUDE_SOURCES.md](ETUDE_SOURCES.md), § 8.
+
 **Problème.** Reproduire un défaut vu en séance demande de refaire le vol.
 
 **Proposition.** Enregistrer à chaque tick les octets des variables
@@ -327,6 +330,9 @@ alerte, capture des octets, ou arrêt de l'enregistrement. Les expressions
 s'évaluent sur les valeurs décodées.
 
 #### C5. Transport réseau · P3 · M
+
+> Approfondi dans [ETUDE_SOURCES.md](ETUDE_SOURCES.md) : sources et émetteurs
+> en plugins, trame commune, TCP ou UDP, gros volumes, schémas d'architecture.
 
 **Problème.** La mémoire partagée impose la même machine.
 
