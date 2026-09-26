@@ -168,6 +168,7 @@ autotest/                   autotest Python embarqué, séparé du paquet Scry
 scry.ini                    paramétrage local, non versionné
 README.md
 DEVELOPPEMENT.md            environnement Python, packaging, publication
+docs/AMELIORATIONS.md       pistes d'amélioration, priorisées
 Data/                       headers d'essai
 Data/corpus/                corpus rejoué par tests/test_corpus.py, voir son README
 Generated/                  sortie, non versionnée
@@ -637,67 +638,13 @@ par le séquenceur de l'application. `autotest/run_demo.sh` (Linux) ou
 
 ## 9. Améliorations recommandées
 
-Par ordre de rapport valeur sur effort.
+Le brainstorm complet, avec l'état des lieux mesuré, trente pistes chiffrées
+en valeur, effort et risque, et une feuille de route en quatre phases, est dans
+[docs/AMELIORATIONS.md](docs/AMELIORATIONS.md).
 
-### Priorité haute
-
-**Boucler la démonstration live : fait.** Voir § 7 ter.
-
-**Filtrage des types.** Sur un header tiers réel, le nombre de déclarations est
-vite ingérable. Une UI de sélection par namespace et par motif de nom, dont le
-résultat est mémorisé dans la configuration, conditionne l'utilisabilité sur un
-cas réel.
-
-**Diff d'ABI : fait.** Voir § 7 bis.
-
-**Cache de parsing.** `parser.file_cache_t` est déjà branché via `[paths] cache`
-mais mérite d'être mesuré et documenté. castxml est lent sur les gros headers,
-et le gain est immédiat sur un cycle de développement.
-
-### Priorité moyenne
-
-**Édition des valeurs.** Passer de `ImGui::Text` à `ImGui::InputScalar` sur un
-buffer non const donne un éditeur de mémoire live. Le modèle contient déjà tout
-ce qu'il faut : offset, taille, type. Prévoir une confirmation, écrire dans la
-mémoire d'un processus en cours n'est pas anodin.
-
-**Sérialisation.** Le même modèle génère aussi bien un writer binaire, un export
-JSON, ou un descripteur pour un protocole de télémétrie. Un second template
-suffit, sans toucher au parsing.
-
-**Vues typées en complément.** Quand le type est disponible côté visualiseur,
-générer aussi des accesseurs typés qui court-circuitent la lecture par offset.
-Plus rapide et plus sûr, avec repli sur la lecture par offset pour les cas
-opaques.
-
-**Tests sur le modèle.** Le modèle est indépendant de pygccxml, donc testable
-sur des fixtures construites à la main, sans castxml. Un jeu de tests sur le
-calcul de padding, les champs de bits et les types anonymes protège les cas
-limites qui ont demandé le plus d'itérations.
-
-### Priorité basse, ou à valider avant de s'y fier
-
-**Ordre d'allocation des champs de bits.** Le décodage est implémenté et les
-offsets viennent de castxml, donc ils suivent l'ABI de la cible. Le standard ne
-normalise pas l'ordre d'allocation. Vérifier sur un cas réel avant de s'appuyer
-dessus en production.
-
-**Bases virtuelles.** L'héritage est géré (voir § 6), mais une base virtuelle
-est seulement signalée : son offset dépend du type le plus dérivé et castxml ne
-le donne pas. Pour un objet complet il est pourtant fixe ; on pourrait le
-retrouver en compilant `static_cast<VBase*>(&obj)` sur une instance.
-
-**Types polymorphes.** Ils sont détectés et signalés dans l'UI et le C++ généré.
-Le pointeur de vtable occupe le début de l'objet, les offsets en tiennent
-compte, mais un objet polymorphe ne doit jamais être reconstruit par `memcpy` à
-partir d'octets reçus : le pointeur de vtable serait celui du processus
-émetteur. La lecture par offset reste valide, la reconstruction non.
-
-**Conteneurs de la bibliothèque standard.** Un `std::vector` ou `std::string`
-membre est vu comme une struct opaque avec ses pointeurs internes. Les lire
-depuis une SHM n'a aucun sens, les adresses appartiennent à l'autre processus.
-Il faudrait des lecteurs spécialisés par conteneur, ou simplement les signaler
-comme non lisibles à distance. C'est aujourd'hui une limite non signalée.
+En tête de liste : une CI Linux et Windows/MSVC, les fonctions du header et les
+`std::vector` exposés en Python embarqué, le rechargement à chaud des scripts,
+et le filtrage des types sur les gros headers.
 
 ---
 
