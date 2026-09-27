@@ -124,6 +124,35 @@ inline void apply_overrides(raven::Producer& p) {
 //   raven_gen::publish(producer);
 ```
 
+#### Cas retenu : le séquenceur du simulateur est accessible
+
+On sait quand le cycle commence et se termine, et on peut intercaler un appel
+entre l'écriture d'un module et la lecture du suivant. C'est plus fin que la
+fin de cycle, et cela suffit à tout garantir :
+
+```cpp
+// Sequenceur du simulateur : un appel apres chaque module.
+for (Module* m : modules) {
+    m->step();
+    raven_gen::apply_overrides(producer);   // reimpose les forcages actifs
+}
+raven_gen::publish(producer);
+```
+
+- **Pas besoin de savoir quel module écrit quelle variable** : l'appel
+  réimpose *tous* les forçages actifs après *chaque* module. Dès que
+  l'écrivain a écrit, sa valeur est remplacée avant que le module suivant ne
+  lise. Un module qui lit avant l'écrivain, dans le même cycle, voit la valeur
+  forcée au cycle précédent.
+- **Pas de déchirure** : tout se passe dans le fil du séquenceur, entre deux
+  modules.
+- **Coût** : un parcours de la table par module, soit rien quand aucun
+  forçage n'est actif et quelques `memcpy` sinon.
+- **Limite** : ce qu'un module lit et écrit *en interne*, pendant son propre
+  `step()`, échappe au forçage. Par exemple un intégrateur `x += dx` lit sa
+  propre sortie : il repart de la valeur forcée au cycle suivant, ce qui est
+  en général l'effet recherché, mais doit être connu.
+
 Il reste des questions ouvertes :
 
 - **Un champ recalculé à partir d'un autre dans le même cycle** : forcer
@@ -157,6 +186,19 @@ ses propres conditions sur les interfaces observées, par exemple
 | **Petit langage d'expressions maison** | Évalué en C++ dans `raven.exe` sur **chaque trame**, en quelques dizaines de ns ; aucune dépendance ; vérifié contre le descripteur avant usage ; enums par leur nom | Un analyseur à écrire (~400 lignes) et à tester | **Recommandé pour commencer** |
 | **Lua** embarqué | Petit (~250 Ko), rapide, facile à isoler, avec un état (compteurs, séquences) | Dépendance, deuxième langage à côté de l'autotest Python ; coût d'appel par trame plus élevé | **Plus tard**, si des scripts avec état deviennent nécessaires |
 | **Python** embarqué | Déjà connu, glue pybind existante | GIL et ramasse-miettes dans le fil qui voit toutes les trames : contraire aux contraintes temps réel de `raven.exe` | **Non dans `raven.exe`**. Python reste dans l'autotest, qui pilote RAVEN par le protocole. |
+
+**Faut-il Lua ?** Non, a priori. Les tests « A puis B » (un événement, puis
+un autre dans un délai) s'écrivent avec deux fonctions à état fournies par
+RAVEN, `since(cond)` (trames écoulées depuis que cond a été vraie) et
+`held(cond, n)`. Par exemple, « quand le pilote commande la sortie du train,
+le train doit être sorti en moins de 3 s » :
+
+```
+since(rose(g_cmd.gear_down)) == 150 && !g_flight.gear_down     # action alert
+```
+
+Les scénarios à plusieurs étapes avec embranchements relèvent de l'autotest
+en Python, qui pilote RAVEN par le protocole.
 
 Ce n'est pas surdimensionné si on commence par le petit langage : il remplace
 en même temps le déclencheur, la condition d'arrêt, les sentinelles avancées,
@@ -192,6 +234,7 @@ les trames :
 | `delta(x)` | `x - prev(x)` |
 | `abs`, `min`, `max`, `within(x, a, b)` | arithmétique courante |
 | `held(cond, n)` | cond vraie depuis au moins n trames (anti-rebond) |
+| `since(cond)` | trames écoulées depuis la dernière fois où cond était vraie |
 
 **Des exemples tirés de la démo :**
 
