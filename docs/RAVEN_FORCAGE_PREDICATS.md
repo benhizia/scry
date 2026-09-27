@@ -153,6 +153,57 @@ raven_gen::publish(producer);
   propre sortie : il repart de la valeur forcée au cycle suivant, ce qui est
   en général l'effet recherché, mais doit être connu.
 
+#### Sûreté entre fils
+
+Trois accès concurrents sont en jeu : `raven.exe` écrit la table de forçages
+(depuis un autre processus), le séquenceur l'applique, et d'éventuels fils
+lancés par certains modules lisent ou écrivent les variables forcées.
+
+**1. Entre `raven.exe` et le séquenceur : sans verrou.**
+
+- Chaque emplacement de la table a son compteur de séquence (seqlock), comme
+  les emplacements de l'anneau. `apply_overrides()` copie l'emplacement,
+  vérifie que le compteur n'a pas bougé, et sinon **garde la valeur appliquée
+  précédemment** au lieu d'attendre.
+- **Jamais de mutex partagé entre processus** : si `raven.exe` plantait en
+  tenant le verrou, le simulateur serait bloqué. Le séquenceur ne doit jamais
+  pouvoir attendre RAVEN.
+- La table n'est que lue par le simulateur ; seul `raven.exe` l'écrit.
+
+**2. Écriture de la valeur forcée : atomique quand c'est possible.**
+
+- Pour un scalaire aligné de 8 octets ou moins (la grande majorité des
+  champs), la glue générée écrit par un store atomique typé plutôt que par
+  `memcpy` : `std::atomic_ref<T>(var).store(v, std::memory_order_relaxed)` en
+  C++20, `__atomic_store_n` ou `InterlockedExchange` sinon. Un fil qui lit en
+  même temps voit l'ancienne ou la nouvelle valeur, jamais un mélange. Scry
+  connaît la taille et l'alignement de chaque champ, et choisit donc à la
+  génération.
+- Pour un champ plus gros (struct, tableau), il n'y a pas d'écriture atomique
+  possible : voir le point 3.
+
+**3. Modules qui lancent des fils : cela dépend de leur modèle.**
+
+| Modèle du module | Exemple | Ce qu'il faut |
+|---|---|---|
+| **Fork-join** : ses fils sont terminés quand `step()` rend la main | calcul parallélisé à l'intérieur du pas | Rien : l'appel après `step()` est sûr tel quel. |
+| **Fil de fond qui écrit une sortie** en continu, hors du rythme du séquenceur | acquisition d'un capteur, communication | Appliquer le forçage **au point où ce fil publie**, sous le verrou que le module utilise déjà pour protéger cette sortie : `raven_gen::apply_overrides(producer, raven_gen::Scope::Capteur)` dans la section critique existante. |
+| **Fil de fond qui lit** une variable forcée | supervision, journalisation | Scalaire : rien de plus, grâce au store atomique du point 2. Plus gros : il lit déjà sous un verrou ou il a déjà un problème de concurrence, forçage ou pas ; le forçage se fait sous ce même verrou. |
+
+- Pour appliquer par module, Scry génère une table par **portée** : une
+  annotation `@raven owner=Capteur` sur les variables concernées, ou une
+  liste dans `scry.ini` pour les headers tiers. Sans annotation, tout est dans
+  la portée globale appliquée après chaque `step()`.
+- **Un seul fil applique une variable donnée** : si deux fils appliquaient le
+  même forçage en même temps, ce serait une course, même avec la même valeur.
+  Les portées garantissent qu'une variable n'est appliquée que par le fil de
+  son propriétaire.
+- **Ne pas forcer une variable qui sert de synchronisation** (drapeau d'un
+  protocole entre fils, compteur de séquence) : la glue peut les refuser par
+  annotation `@raven no_override`.
+- Ces fils étant peu nombreux, il est réaliste de les recenser un par un et de
+  poser les annotations au moment d'activer le forçage.
+
 Il reste des questions ouvertes :
 
 - **Un champ recalculé à partir d'un autre dans le même cycle** : forcer
@@ -278,6 +329,106 @@ pred del <nom>
 - Le déclencheur actuel devient un prédicat d'action `start` ; les sentinelles,
   des prédicats `changed(x)` d'action `count`. Le code existant se simplifie au
   lieu de s'alourdir.
+
+### Dictionnaire du langage
+
+Pour qu'on maîtrise vite le langage, tout ce qu'il accepte tient sur une page,
+et la même page est intégrée à `raven-view` (voir plus bas).
+
+**Valeurs**
+
+| Écriture | Sens | Exemple |
+|---|---|---|
+| nombre | entier ou décimal | `42`, `-3.5`, `1e3` |
+| `true`, `false` | booléens | `g_flight.gear_down == true` |
+| chemin de champ | valeur du champ à la trame courante | `g_flight.pos.alt` |
+| élément de tableau | index entre crochets | `g_flight.fuel[2]` |
+| nom d'enum | valeur d'une enum, vérifiée contre le type du champ comparé | `g_sim.state == Running` |
+
+**Opérateurs**, du moins au plus prioritaire
+
+| Opérateur | Sens |
+|---|---|
+| `\|\|` | ou |
+| `&&` | et |
+| `==` `!=` `<` `<=` `>` `>=` | comparaison |
+| `+` `-` | addition, soustraction |
+| `*` `/` | multiplication, division |
+| `!` `-` (unaires) | non, opposé |
+| `( )` | regroupement |
+
+**Fonctions**
+
+| Fonction | Rend | Sens | Exemple |
+|---|---|---|---|
+| `changed(x)` | booléen | x différent de la trame précédente | `changed(g_flight.phase)` |
+| `rose(b)` | booléen | b passe de faux à vrai | `rose(g_flight.gear_down)` |
+| `fell(b)` | booléen | b passe de vrai à faux | `fell(g_flight.gear_down)` |
+| `prev(x)` | valeur | x à la trame précédente | `prev(g_flight.phase) == Climb` |
+| `delta(x)` | nombre | `x - prev(x)` | `abs(delta(g_flight.pos.alt)) > 500` |
+| `held(c, n)` | booléen | c vraie depuis au moins n trames | `held(g_sim.state == Frozen, 100)` |
+| `since(c)` | nombre | trames depuis la dernière fois où c était vraie | `since(rose(g_cmd.gear_down)) == 150` |
+| `abs(x)` | nombre | valeur absolue | `abs(g_flight.pos.lat - 48.85)` |
+| `min(a, b)`, `max(a, b)` | nombre | minimum, maximum | `min(g_flight.fuel[0], g_flight.fuel[1]) < 100` |
+| `within(x, a, b)` | booléen | a ≤ x ≤ b | `within(g_flight.pos.alt, 0, 40000)` |
+
+**Actions**, à choisir pour chaque prédicat
+
+| Action | Effet quand le prédicat devient vrai |
+|---|---|
+| `count` | compte et garde la dernière occurrence (comme une sentinelle) |
+| `mark` | pose un marqueur horodaté dans le `.rvn` |
+| `start` | démarre l'enregistrement s'il est armé (le déclencheur) |
+| `stop` | arrête l'enregistrement |
+| `alert` | bandeau dans `raven-view`, et compteur |
+
+**Recettes**
+
+| Je veux | J'écris |
+|---|---|
+| enregistrer dès que la simulation tourne | `start : g_sim.state == Running` |
+| arrêter au gel | `stop : g_sim.state == Frozen` |
+| attraper un booléen fugitif | `count : changed(g_flight.gear_down)` |
+| un saut de valeur suspect | `alert : abs(delta(g_flight.pos.alt)) > 500` |
+| un délai dépassé après une commande | `alert : since(rose(g_cmd.gear_down)) == 150 && !g_flight.gear_down` |
+| une incohérence entre champs | `alert : g_flight.phase == Cruise && g_flight.pos.alt < 1000` |
+
+**Règles à connaître**
+
+- Évaluation sur **chaque trame**. `prev`, `delta`, `rose`, `fell` et `changed`
+  sont faux ou nuls à la première trame.
+- Les calculs se font en `double` ; les entiers de 64 bits sont comparés
+  exactement.
+- Une enum ne se compare qu'à ses propres noms ou à un entier : `g_sim.state
+  == Climb` est refusé, puisque `Climb` n'est pas un `SimState`.
+- Une division par zéro rend le prédicat faux, et il est signalé une fois.
+
+### Le dictionnaire dans `raven-view`
+
+Le dictionnaire ci-dessus est écrit une seule fois, sous forme de table dans
+le code de l'analyseur : noms, signatures, descriptions et exemples. Il sert à
+la fois à l'analyseur, à l'aide de l'IHM et à la génération de cette page. Il
+ne peut donc pas diverger de ce qui est vraiment accepté.
+
+Dans l'éditeur de prédicats de `raven-view` :
+
+- **Panneau d'aide à côté du champ texte**, avec trois onglets :
+  - *Fonctions* : la table ci-dessus, filtrable ; un clic insère la fonction
+    avec ses parenthèses.
+  - *Champs* : l'arbre du descripteur avec le type de chaque feuille et, pour
+    une enum, la liste de ses valeurs ; un clic insère le chemin ou le nom.
+  - *Recettes* : les exemples, qu'un clic copie dans l'éditeur, prêts à
+    adapter.
+- **Complétion** pendant la frappe : chemins de champs, noms d'enum valables
+  pour le champ à gauche d'une comparaison, fonctions.
+- **Vérification à chaque frappe** : l'erreur est soulignée à sa position,
+  avec un message clair (« `Climb` n'est pas une valeur de `demo::SimState` :
+  Stopped, Running, Frozen »).
+- **Essai immédiat** : un bouton *Tester* évalue l'expression sur la trame
+  courante et affiche le résultat, avec la valeur de chaque sous-expression
+  au survol. On voit tout de suite pourquoi c'est vrai ou faux.
+- **Constructeur à listes** pour les cas simples, qui écrit le texte
+  équivalent dans l'éditeur : on apprend la syntaxe en cliquant.
 
 **Découpage proposé :**
 
