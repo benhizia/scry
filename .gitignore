@@ -46,3 +46,4 @@ imgui.ini
 Thumbs.db
 desktop.ini
 .DS_Store
+*.rvn
