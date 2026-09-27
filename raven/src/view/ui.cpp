@@ -283,7 +283,8 @@ void draw(Client& c, UiState& ui) {
     ImGui::Text("  trame %llu   recues %llu   perdues %llu", (unsigned long long)c.last,
                 (unsigned long long)c.frames, (unsigned long long)c.lost);
     ImGui::SameLine();
-    ImGui::Checkbox("Figer l'affichage", &c.frozen);
+    ImGui::Checkbox("Pause vue", &c.paused);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Gele les valeurs affichees ; raven continue d'acquerir et d'enregistrer");
     if (!c.last_error.empty()) {
         ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "%s", c.last_error.c_str());
         ImGui::SameLine();

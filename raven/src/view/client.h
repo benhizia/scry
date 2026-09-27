@@ -52,7 +52,7 @@ public:
     std::string state = "?", message, last_error;
     uint64_t frames = 0, last = 0, lost = 0, rec_frames = 0, rec_bytes = 0, dropped = 0;
     bool source_ok = false;
-    bool frozen = false;                   // affichage fige : valeurs non rafraichies
+    bool paused = false;                   // pause vue : valeurs affichees non rafraichies
 
     std::map<FieldRef, std::vector<unsigned char>> values;
     std::deque<SentinelEvent> events;      // les plus recents a la fin

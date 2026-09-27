@@ -107,7 +107,7 @@ void Client::handle(const std::string& line) {
         in >> a;
         std::string hex;
         in >> hex;
-        if (frozen || !ref_of(a, r)) return;
+        if (paused || !ref_of(a, r)) return;
         std::vector<unsigned char>& v = values[r];
         v.resize(hex.size() / 2);
         for (size_t i = 0; i < v.size(); ++i)

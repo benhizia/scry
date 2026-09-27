@@ -107,6 +107,7 @@
 - Paresseux : un nœud replié ne décode rien ; `ImGuiListClipper` pour les très
   grands arbres.
 - Changements récents mis en évidence grâce aux sentinelles.
+- *Pause vue* : gèle les valeurs affichées sans arrêter l'acquisition (fait).
 - Widgets spécialisés écrits à la main, associés par type ou par annotation
   (`@raven widget=map`).
 - Un plantage du visualiseur n'arrête pas l'enregistrement ; plusieurs
@@ -166,8 +167,23 @@ Rien de ce qui suit n'a été discuté. À trier avant toute spécification.
 - **Statistiques par champ** : min, max, moyenne, nombre de changements.
 - **Comparaison de deux enregistrements** : écart champ par champ entre une
   exécution et une référence, avec tolérances. Base d'une non-régression.
+- **Prédicats utilisateur** : conditions écrites par l'utilisateur sur les
+  champs observés (`rose(g_flight.gear_down) && g_flight.pos.alt > 5000`),
+  dans un petit langage d'expressions évalué sur chaque trame, avec les
+  actions compter, marquer, démarrer, arrêter ou alerter. Le déclencheur et
+  les sentinelles actuels en deviennent des cas particuliers. Étude :
+  [RAVEN_FORCAGE_PREDICATS.md](RAVEN_FORCAGE_PREDICATS.md) § 2.
 - **Règles de surveillance** déclaratives (bornes, cohérences entre champs)
   évaluées en direct, en plus des sentinelles.
+
+### Intervenir sur le système (mode intrusif)
+
+- **Forçage de valeurs** : depuis `raven-view`, remplacer la valeur d'un champ
+  pour tous ses lecteurs, en empêchant son écrivain de l'imposer. Simple en
+  pont réseau (point à point, relais de groupe multicast) ; en SHM, il faut
+  l'appliquer au moment de la publication, par la glue générée du producteur.
+  Mode explicite, toujours visible, journalisé dans le `.rvn`. Étude :
+  [RAVEN_FORCAGE_PREDICATS.md](RAVEN_FORCAGE_PREDICATS.md) § 1.
 
 ### Visualisation
 

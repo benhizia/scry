@@ -60,7 +60,7 @@ headers ──scry raven──► demo.rvndesc ───────────
    - colonne *Sent.* : chaque changement est compté, même s'il ne dure qu'une
      trame, et le dernier reste affiché ;
    - colonne *Trace* : courbe du champ, une valeur par trame ;
-   - *Figer l'affichage* : arrête le rafraîchissement des valeurs, pas
+   - *Pause vue* : gèle les valeurs affichées, pas
      l'acquisition.
 5. **Relire** :
    ```
