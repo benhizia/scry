@@ -1,7 +1,6 @@
 """Canal de memoire partagee : protocole, lecteur Python, producteur C++."""
 
 import os
-import shutil
 import struct
 import subprocess
 import sys
@@ -12,6 +11,7 @@ from multiprocessing import shared_memory
 import pytest
 from pathlib import Path
 
+import toolchain
 from scry import model, producer
 from scry.config import load_config
 from scry.runtime import shm, watch
@@ -138,9 +138,7 @@ def test_watch_refuse_un_layout_different():
 
 
 # -- producteur C++ reel ----------------------------------------------------------
-needs_toolchain = pytest.mark.skipif(
-    sys.platform == "win32" or not (shutil.which("castxml") and shutil.which("g++")),
-    reason="castxml ou g++ absent")
+needs_toolchain = toolchain.needs_toolchain
 
 HEADER_H = """#pragma once
 #include <cstdint>
@@ -154,9 +152,9 @@ def _cfg(tmp_path, segment):
     (tmp_path / "demo.h").write_text(HEADER_H, encoding="utf-8")
     ini = tmp_path / "scry.ini"
     ini.write_text(
-        "[paths]\nheaders = demo.h\noutput = out\ncache =\n"
-        "[castxml]\ncompiler = gcc\nextra_cflags = -Wno-pragma-once-outside-header\n"
-        "[shm]\nname = %s\nbuild_dir = build\n" % segment, encoding="utf-8")
+        toolchain.ini_paths(headers="demo.h", output="out")
+        + toolchain.ini_castxml()
+        + "[shm]\nname = %s\nbuild_dir = build\n" % segment, encoding="utf-8")
     return load_config(ini)
 
 
@@ -189,7 +187,14 @@ def test_producteur_cpp_et_lecteur_python_sans_dechirure(tmp_path):
         etat = watch.pick_struct(structs, src)
         assert etat.name == "demo::Etat" and src.payload_size == etat.size
         seen = set()
-        for _ in range(300):
+        tentatives = 0
+        # L'ecrivain ne s'arrete jamais : la plupart des instantanes sont
+        # rejetes, c'est precisement le but. On lit jusqu'a en obtenir assez de
+        # coherents ou jusqu'au delai, car le rythme depend de la machine,
+        # alors que la propriete verifiee, elle, n'en depend pas.
+        deadline = time.time() + 10.0
+        while time.time() < deadline and len(seen) < 25:
+            tentatives += 1
             if not src.refresh():
                 continue
             data = src.read(0, src.payload_size)
@@ -198,15 +203,22 @@ def test_producteur_cpp_et_lecteur_python_sans_dechirure(tmp_path):
             tick = (data[0] - 3) % 251
             assert data == bytes((i * 7 + 3 + tick) % 251 for i in range(len(data)))
             seen.add(src.sequence)
-        assert len(seen) > 10
+        assert len(seen) >= 10, "%d instantanes coherents sur %d tentatives" % (
+            len(seen), tentatives)
         lines = watch.render(etat, src, segment)
         assert any(line.lstrip().startswith("obj.bits") for line in lines)
         src.close()
     finally:
         proc.terminate()
         proc.wait(timeout=10)
-    # L'ecrivain retire son segment a l'arret.
-    assert not os.path.exists("/dev/shm/%s" % segment) or sys.platform == "darwin"
+    # L'ecrivain retire son segment a l'arret : sous Linux le fichier de
+    # /dev/shm disparait ; sous Windows le mapping cesse d'exister des que le
+    # dernier handle est ferme, et plus personne ne peut l'ouvrir.
+    if sys.platform.startswith("linux"):
+        assert not os.path.exists("/dev/shm/%s" % segment)
+    else:
+        with pytest.raises(shm.ShmError):
+            shm.ShmChannelSource(segment).close()
 
 
 @needs_toolchain

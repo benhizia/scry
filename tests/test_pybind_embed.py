@@ -12,10 +12,10 @@ doit s'y trouver, ce qui prouve que bindings, modele et compilateur sont
 d'accord.
 
 Compile une fois par session (une vingtaine de secondes). Saute sans castxml,
-g++, pybind11, numpy ou les headers et la bibliotheque de Python.
+compilateur C++, pybind11, numpy, ou les fichiers de developpement de Python.
 """
 
-import shutil
+import os
 import subprocess
 import sys
 import sysconfig
@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+import toolchain
 from scry.runtime import memory
 from scry.runtime.memory import BufferSource
 
@@ -34,20 +35,50 @@ HOST = ROOT / "tests" / "cpp" / "pybind_host.cpp"
 
 
 def _python_build_flags():
-    """-I et -l pour embarquer l'interpreteur courant, ou None."""
+    """(includes, dossiers de bibliotheque, bibliotheques, options) pour
+    embarquer l'interpreteur courant, ou None si les fichiers de
+    developpement manquent.
+
+    Sous Windows, Python.h et pythonXY.lib vivent dans l'installation de base,
+    jamais dans le venv, et l'edition de liens passe par le pragma de
+    Python.h : donner le dossier libs suffit. Ailleurs, il faut -l et un rpath
+    pour retrouver la bibliotheque a l'execution.
+    """
     include = sysconfig.get_paths()["include"]
+    if not (Path(include) / "Python.h").is_file():
+        return None
+    if sys.platform == "win32":
+        libdir = Path(sys.base_prefix) / "libs"
+        if not list(libdir.glob("python3*.lib")):
+            return None
+        return [include], [str(libdir)], [], []
     libdir = sysconfig.get_config_var("LIBDIR")
     ldlib = sysconfig.get_config_var("LDLIBRARY") or ""
-    if not (Path(include) / "Python.h").is_file() or not ldlib.endswith(".so"):
+    if not ldlib.endswith(".so"):
         return None
     name = ldlib[3:-3]                      # libpython3.11.so -> python3.11
-    return ["-I%s" % include], ["-L%s" % libdir, "-Wl,-rpath,%s" % libdir, "-l%s" % name]
+    return [include], [libdir], [name], ["-Wl,-rpath,%s" % libdir]
+
+
+def _host_env():
+    """Environnement de l'hote : la DLL de Python et les paquets du venv.
+
+    L'interpreteur embarque part de l'installation de base ; numpy, lui, est
+    dans le venv qui lance les tests. Sans PYTHONPATH, les vues numpy des
+    bindings ne se creeraient pas."""
+    env = dict(os.environ)
+    if sys.platform == "win32":
+        env["PATH"] = sys.base_prefix + os.pathsep + env.get("PATH", "")
+        env["PYTHONHOME"] = sys.base_prefix
+    paquets = [d for d in sys.path if d.endswith("site-packages")]
+    if paquets:
+        env["PYTHONPATH"] = os.pathsep.join(paquets)
+    return env
 
 
 pytestmark = pytest.mark.skipif(
-    sys.platform == "win32" or not (shutil.which("castxml") and shutil.which("g++"))
-    or _python_build_flags() is None,
-    reason="castxml, g++ ou libpython absent")
+    toolchain.CASTXML is None or toolchain.KIND is None or _python_build_flags() is None,
+    reason="castxml, compilateur C++ ou fichiers de developpement de Python absents")
 
 
 @pytest.fixture(scope="module")
@@ -61,30 +92,30 @@ def built(tmp_path_factory):
     out = tmp_path_factory.mktemp("pybind_embed")
     ini = out / "scry.ini"
     ini.write_text(
-        "[paths]\noutput = gen\ncache =\n"
-        "[castxml]\ncompiler = gcc\nextra_cflags = -Wno-pragma-once-outside-header\n"
-        "include_paths = %s\n"
+        toolchain.ini_paths(output="gen")
+        + toolchain.ini_castxml(extra=["include_paths = %s" % DATA.as_posix()])
         # include_non_public : les membres prives entrent dans le modele, les
         # bindings doivent les ecarter pour compiler.
-        "[introspection]\nstop_on_error = true\ninclude_non_public = true\n"
-        % DATA.as_posix(), encoding="utf-8")
+        + "[introspection]\nstop_on_error = true\ninclude_non_public = true\n",
+        encoding="utf-8")
     cfg = load_config(ini)
     introspector = Introspector(cfg)
     structs = introspector.parse([str(CASES), str(DATA / "test_structs_complexe.h")])
     pybind.generate(structs, cfg, variables=introspector.variables)
 
     gen = out / "gen"
-    py_inc, py_lib = _python_build_flags()
-    exe = out / "pybind_host"
-    cmd = (["g++", "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
-            # Hors du perimetre de cette branche : -Winvalid-offsetof dans le
-            # header ABI, s_internal inutilise dans le header de test.
-            "-Wno-invalid-offsetof", "-Wno-unused-variable",
-            "-I%s" % gen, "-I%s" % CASES.parent, "-I%s" % DATA,
-            "-I%s" % pybind11.get_include()] + py_inc
-           + [str(HOST), str(gen / "scry_module.generated.cpp"), "-o", str(exe)] + py_lib)
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr[-6000:]
+    py_inc, py_libdirs, py_libs, py_extra = _python_build_flags()
+    exe = out / toolchain.exe_name("pybind_host")
+    # Hors du perimetre : offsetof sur un type qui n'est pas standard-layout
+    # dans le header ABI, s_internal inutilise dans le header de test, et
+    # C4324, qui signale qu'une struct alignas est completee par du padding.
+    quiet = (["/wd4101", "/wd4324"] if toolchain.IS_MSVC
+             else ["-Wno-invalid-offsetof", "-Wno-unused-variable"])
+    toolchain.check(toolchain.compile_exe(
+        [HOST, gen / "scry_module.generated.cpp"], exe,
+        includes=[gen, CASES.parent, DATA],
+        external=[pybind11.get_include()] + py_inc,
+        lib_dirs=py_libdirs, libs=py_libs, extra=quiet + py_extra))
     return exe, index_by_name(structs), introspector.variables, gen
 
 
@@ -92,7 +123,8 @@ def run(built, tmp_path, script):
     exe = built[0]
     path = tmp_path / "script.py"
     path.write_text(textwrap.dedent(script), encoding="utf-8")
-    proc = subprocess.run([str(exe), str(path)], capture_output=True, text=True, timeout=60)
+    proc = subprocess.run([str(exe), str(path)], capture_output=True, text=True,
+                          timeout=60, env=_host_env())
     out = {}
     for line in proc.stdout.splitlines():
         key, _, value = line.partition(" ")
