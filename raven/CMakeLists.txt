@@ -19,6 +19,7 @@ set(RAVEN_IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/imgui" CACHE PAT
 option(RAVEN_VIEW "construire raven-view (ImGui)" ON)
 option(RAVEN_DEMO "construire le simulateur de demonstration (Scry requis)" ON)
 
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 find_package(Threads REQUIRED)
 
 # Coeur partage : descripteur, fichiers .rvn, sockets.
