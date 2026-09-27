@@ -2,6 +2,7 @@
 
 > Étude, pas encore de code. Le pseudo-code C++ ci-dessous sert à fixer les
 > responsabilités ; les noms, signatures et formats sont provisoires.
+> Le contour fonctionnel complet est dans [RAVEN_CONTOUR.md](RAVEN_CONTOUR.md).
 
 ## 0. Recadrage
 
@@ -68,15 +69,18 @@ par type**, jamais par du code par plugin :
 ```
                  écrit à la main, une fois          généré par Scry, par projet
                ┌──────────────────────────┐      ┌──────────────────────────────┐
-  RAVEN        │ raven/descriptor.h       │◄─────│ raven_desc.gen.cpp           │
+  RAVEN        │ raven/descriptor.h       │◄─────│ sim_a.rvndesc                │
   (contrat)    │ raven/producer.h         │      │   tables types/champs/canaux │
-               └──────────────────────────┘      │ raven_codecs.gen.cpp (opt.)  │
-               ┌──────────────────────────┐      └──────────────────────────────┘
-  RAVEN        │ core : Recorder, Sentinel│      ┌──────────────────────────────┐
-  (générique)  │ Relocator, ui::FieldTree │      │ raven_publish.gen.cpp        │
-               │ plugins : Shm, Tcp, Mcast│      │   compilé dans le SIMULATEUR │
-               │ File, Mitm               │      │   static_assert + collecte   │
-               └──────────────────────────┘      └──────────────────────────────┘
+               └──────────────────────────┘      │   chargé au démarrage        │
+               ┌──────────────────────────┐      │ raven_codecs.gen.cpp (opt.)  │
+  raven.exe    │ plugins : Shm, Tcp, Mcast│      └──────────────────────────────┘
+  (générique)  │ File, Mitm ; Recorder,   │      ┌──────────────────────────────┐
+               │ Sentinel, Relocator      │      │ raven_publish.gen.cpp        │
+               └──────────────────────────┘      │   compilé dans le SIMULATEUR │
+               ┌──────────────────────────┐      │   static_assert + collecte   │
+  raven-view   │ ui::FieldTree, widgets,  │      └──────────────────────────────┘
+  (générique)  │ lecteur .rvn             │
+               └──────────────────────────┘
   Config       raven.toml : quel plugin, quelle adresse, quels tampons (exécution)
   Entrée Scry  headers + scry.ini [raven] + annotations dans les commentaires
 ```
@@ -222,14 +226,18 @@ struct Descriptor {
 
 ---
 
-## 5. Généré par Scry, côté RAVEN : `raven_desc.gen.cpp`
+## 5. Généré par Scry, côté RAVEN : le descripteur `.rvndesc`
 
-Des données pures : aucun include des headers du projet. RAVEN peut donc
-**compiler sans les headers du simulateur**, et même charger ce descripteur
-depuis un fichier au lieu de le compiler (voir § 10).
+Des données pures : aucun include des headers du projet. Scry les écrit dans
+un fichier `sim_a.rvndesc` que `raven.exe` et `raven-view.exe` chargent au
+démarrage ; aucun des deux n'est recompilé quand un header change (voir § 11).
+Le contenu est montré ci-dessous sous forme de tables C++, pour la
+lisibilité : c'est exactement ce que `Descriptor::deserialize` reconstruit en
+mémoire.
 
 ```cpp
-// GÉNÉRÉ PAR SCRY, ne pas modifier. Source : sim/etat.h, layout_hash vérifié.
+// Contenu de sim_a.rvndesc, vu comme des tables C++.
+// GÉNÉRÉ PAR SCRY. Source : sim/etat.h, layout_hash vérifié.
 #include <raven/descriptor.h>
 namespace raven::gen {
 
@@ -298,7 +306,7 @@ cycle.
 #include "sim/etat.h"
 #include <raven/producer.h>
 
-// 1. Le layout compilé est celui que décrit raven_desc.gen.cpp.
+// 1. Le layout compilé est celui que décrit sim_a.rvndesc.
 static_assert(sizeof(FlightState) == 56, "FlightState a changé : relancer scry");
 static_assert(offsetof(FlightState, pos) + offsetof(Position, alt) == 24, "");
 static_assert(offsetof(FlightState, gear_down) == 33, "");
@@ -455,7 +463,12 @@ public:
 };
 ```
 
-### IHM imgui paresseuse : l'arbre se construit seul
+### IHM imgui paresseuse : l'arbre se construit seul (dans `raven-view.exe`)
+
+imgui est en mode immédiat : il ne garde aucun arbre de widgets et l'IHM est
+redessinée à chaque image par des appels de fonction, avec des chaînes et des
+valeurs connues à l'exécution. Une boucle sur le descripteur chargé suffit :
+rien n'est à déclarer à la compilation.
 
 ```cpp
 namespace raven::ui {
@@ -504,16 +517,86 @@ enums, tableaux, adresses et seuils viennent du descripteur.
 
 ---
 
-## 9. Récapitulatif
+## 9. Deux exécutables : `raven.exe` et `raven-view.exe`
+
+```
+                     sim_a.rvndesc (Scry)
+                      │             │
+                      ▼             ▼
+ simulateur ──SHM──► raven.exe ──────────────► raven-view.exe
+ réseau ───────────►  acquérir      instantanés    arbre imgui paresseux
+ fichier .rvn ─────►  vérifier      + journal      courbes, navigation
+                      enregistrer   sentinelles    ▲
+                      sentinelles   (SHM locale)   │
+                      │                            │
+                      └──────► vol.rvn ────────────┘  hors ligne
+                               (descripteur en tête)
+```
+
+| | `raven.exe` | `raven-view.exe` |
+|---|---|---|
+| Rôle | enregistreur, sans IHM | visualiseur paresseux |
+| Voit | **toutes** les trames | la dernière trame de chaque canal, au mieux |
+| Sentinelles | les calcule (lui seul voit tout) | affiche leur journal |
+| Charge | `.rvndesc` | `.rvndesc` en direct ; rien de plus pour un `.rvn` |
+| Priorité | haute | normale, éventuellement sur un autre poste |
+| S'il plante | l'enregistrement s'arrête : il doit être robuste | rien n'est perdu |
+
+Le protocole local entre les deux, à spécifier :
+
+```cpp
+namespace raven::live {
+
+struct LiveHeader {            // en tête de la SHM de publication
+    uint32_t version;
+    uint64_t schema_hash;      // le visualiseur refuse un .rvndesc différent
+    uint64_t writer_heartbeat; // raven.exe vivant ?
+    uint32_t channel_count;
+    uint32_t journal_capacity;
+};
+
+struct LiveSlot {              // un par canal : dernière trame, seqlock
+    std::atomic<uint64_t> seq;
+    uint64_t t_source_ns;
+    uint32_t size;
+    uint8_t  payload[];        // taille donnée par ChannelDesc
+};
+
+struct SentinelEvent {         // anneau : le visualiseur rattrape s'il le peut
+    uint64_t seq, t_ns;
+    uint16_t channel;
+    uint32_t field;            // index du FieldDesc
+    uint64_t old_bits, new_bits;
+};
+
+class Publisher {              // dans raven.exe, fil de publication
+public:
+    void publish(const Frame&);           // écrase le slot du canal
+    void event(const SentinelEvent&);     // n'attend jamais : anneau
+};
+
+class Subscriber {             // dans raven-view.exe
+public:
+    ByteView latest(uint16_t channel);    // copie cohérente, sinon réessaie
+    size_t   drain_events(std::vector<SentinelEvent>& out); // signale les trous
+};
+
+} // namespace raven::live
+```
+
+---
+
+## 10. Récapitulatif
 
 | Artefact | Écrit par | Compilé dans | Connaît les types du projet ? | Change quand |
 |---|---|---|---|---|
 | `raven/descriptor.h`, `raven/producer.h` | RAVEN, à la main | RAVEN ; simulateur (`producer.h`) | non | le contrat évolue (versionné) |
-| `raven_desc.gen.cpp` | **Scry** | RAVEN (ou fichier chargé) | sous forme de données | un header change |
+| `sim_a.rvndesc` | **Scry** | aucun : chargé par `raven.exe` et `raven-view.exe` | sous forme de données | un header change |
 | `raven_publish.gen.cpp` | **Scry** | simulateur | oui (inclut les headers) | un header ou la liste des canaux change |
 | `raven_codecs.gen.cpp` (optionnel) | **Scry** | RAVEN, plugins réseau | oui, par type | un header change |
-| Plugins `ISource` | RAVEN, à la main | RAVEN | non | on ajoute un transport |
-| Recorder, Sentinel, Relocator, FieldTree | RAVEN, à la main | RAVEN | non | jamais pour un nouveau projet |
+| Plugins `ISource` | RAVEN, à la main | `raven.exe` | non | on ajoute un transport |
+| Recorder, Sentinel, Relocator, Publisher | RAVEN, à la main | `raven.exe` | non | jamais pour un nouveau projet |
+| FieldTree, widgets, lecteur `.rvn`, Subscriber | RAVEN, à la main | `raven-view.exe` | non | jamais pour un nouveau projet |
 | `raven.toml` | l'utilisateur | lu à l'exécution | non | on change de banc ou de mode |
 | `scry.ini [raven]`, annotations `@raven` | l'utilisateur | lu par Scry | décrit les canaux | on ajoute un canal ou une unité |
 
@@ -531,24 +614,14 @@ C'est la piste D5 de [AMELIORATIONS.md](AMELIORATIONS.md), précisée.
 
 ---
 
-## 10. À trancher
+## 11. À trancher
 
-1. **Descripteur compilé ou chargé ?** La question porte sur l'exécutable
-   `raven.exe`, pas sur la glue du simulateur, qui est compilée dans le
-   simulateur dans les deux cas.
-   - *Compilé* : Scry génère `raven_desc.gen.cpp`, compilé dans `raven.exe`.
-     L'exécutable ne connaît qu'un projet, et un header modifié impose de
-     recompiler RAVEN.
-   - *Chargé* : Scry génère un fichier de données (`sim_a.rvndesc`), que
-     `raven.exe` lit au démarrage (`raven.exe --desc sim_a.rvndesc`). Le même
-     exécutable sert tous les projets et toutes les versions ; un header
-     modifié impose seulement de relancer Scry.
-
-   Pour rejouer un vieil enregistrement, RAVEN doit de toute façon savoir lire
-   le descripteur écrit en tête du fichier : le code de chargement existe
-   donc dans les deux cas, et *chargé* ne coûte presque rien de plus. Le
-   risque d'un fichier de descripteur qui ne correspond pas est couvert par
-   le `layout_hash` de chaque trame.
+1. ~~Descripteur compilé ou chargé ?~~ **Tranché : chargé.** Scry génère
+   `sim_a.rvndesc`, lu au démarrage par `raven.exe` et `raven-view.exe`. Le
+   même exécutable sert tous les projets ; un header modifié impose seulement
+   de relancer Scry. Le code de chargement existe de toute façon pour relire
+   le descripteur en tête d'un `.rvn`, et le `layout_hash` de chaque trame
+   couvre le risque d'un descripteur qui ne correspond pas.
 2. **Où vit `raven/producer.h`** : dans RAVEN, vendu au simulateur, ou copié
    par Scry à côté de la glue ? Dans les deux cas, il doit rester un header
    seul, sans dépendance.
@@ -556,6 +629,8 @@ C'est la piste D5 de [AMELIORATIONS.md](AMELIORATIONS.md), précisée.
    sous-arbres (`g_flight.pos`) pour réduire le débit ?
 4. **Annotations** : quel vocabulaire minimal (`count`, `unit`, `threshold`,
    `ignore`, `period`) et quelle priorité entre le commentaire et `scry.ini` ?
-5. **Codecs réseau** : nécessaires seulement s'il existe une machine de
+5. **Protocole local `raven::live`** : SHM seule, ou aussi le réseau pour un
+   visualiseur distant ? Taille de l'anneau des sentinelles ?
+6. **Codecs réseau** : nécessaires seulement s'il existe une machine de
    boutisme différent ou un protocole non « struct brute ». À confirmer avant
    de les générer.

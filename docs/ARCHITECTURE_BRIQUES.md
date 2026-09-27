@@ -114,7 +114,7 @@ flowchart LR
     subgraph BUILD["Au build : Scry, hors ligne"]
         direction TB
         H["Headers C++<br/>tiers ou maison"] --> S["Scry<br/>décrire · vérifier · générer"]
-        S --> D["Descripteur<br/>modèle JSON versionné<br/>+ layout_hash"]
+        S --> D["Descripteur<br/>modèle JSON versionné, .rvndesc<br/>+ layout_hash"]
         S --> G["Glue générée<br/>static_assert · pybind11<br/>tables C++ de canaux<br/>et d'adresses"]
     end
 
@@ -122,16 +122,15 @@ flowchart LR
         direction TB
         T["Couche test Scry<br/>Python embarqué,<br/>dans le cycle"]
         SIM["Simulateur"]
-        A["RAVEN<br/>(outil d'acquisition)<br/>SHM · TCP · multicast · fichier<br/>enregistrement sans perte · rejeu"]
-        V["Visualiseurs Scry<br/>différé, paresseux"]
+        A["raven.exe<br/>enregistreur, sans IHM<br/>SHM · TCP · multicast · fichier<br/>sans perte · sentinelles"]
+        V["raven-view.exe<br/>imgui, paresseux<br/>direct ou fichier .rvn"]
         T <-- "pointeurs,<br/>même processus" --> SIM
         SIM -- "SHM, multicast" --> A
-        A -- "flux, enregistrements<br/>(plugin fourni par RAVEN)" --> V
-        SIM -. "inspection<br/>ponctuelle" .-> V
+        A -- "instantanés, journal des sentinelles,<br/>fichiers .rvn" --> V
     end
 
-    G == "compilée dans<br/>simulateur, test, RAVEN" ==> RUN
-    D == "lu par<br/>RAVEN, visualiseurs" ==> RUN
+    G == "compilée dans<br/>simulateur, test" ==> RUN
+    D == "chargé par<br/>raven.exe, raven-view.exe" ==> RUN
 ```
 
 ### Scry : décrire, vérifier, générer, visualiser en différé
@@ -172,6 +171,10 @@ sans perte, et rejoue.
 | Afficher : IHM imgui en C++, paresseuse, construite depuis le descripteur | |
 | Porter le **système de plugins** de sources (SHM, TCP, multicast, fichier, intermédiaire) | |
 
+Deux exécutables : `raven.exe` enregistre sans IHM et calcule les
+sentinelles ; `raven-view.exe` visualise, en direct ou depuis un `.rvn`. Le
+contour fonctionnel complet est dans [RAVEN_CONTOUR.md](RAVEN_CONTOUR.md).
+
 C'est lui qui porte l'essentiel de [ETUDE_SOURCES.md](ETUDE_SOURCES.md) : trame
 commune, TCP ou UDP, gros volumes, contre-pression, format de rejeu. Ses
 spécifications détaillées restent à écrire.
@@ -184,9 +187,9 @@ Le point le plus important : **ce que les briques échangent, et dans quel sens.
 
 | Échange | Producteur | Consommateur | Forme |
 |---|---|---|---|
-| Descripteur | Scry | RAVEN, visualiseurs | modèle JSON versionné (`format`, `version`, plateforme, structures, `layout_hash`) |
-| Glue générée | Scry | simulateur, couche test, RAVEN | sources C++ et bindings, compilés dans chaque binaire |
-| Trames, enregistrements | RAVEN | RAVEN (rejeu, IHM) | format de fichier auto-descriptif : descripteur en tête, `layout_hash` par trame |
+| Descripteur | Scry | `raven.exe`, `raven-view.exe` (fichier `.rvndesc` chargé) | modèle JSON versionné (`format`, `version`, plateforme, structures, `layout_hash`) |
+| Glue générée | Scry | simulateur, couche test | sources C++ et bindings, compilés dans chaque binaire |
+| Trames, enregistrements | `raven.exe` | `raven-view.exe` (direct et rejeu) | format de fichier auto-descriptif : descripteur en tête, `layout_hash` par trame |
 
 **Règle de dépendance** : RAVEN dépend de Scry **au build
 seulement** (descripteur et glue). Scry ne dépend jamais de RAVEN et ne
