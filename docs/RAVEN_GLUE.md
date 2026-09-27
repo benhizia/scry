@@ -43,7 +43,7 @@ Le test qui tranche :
 - *J'ajoute un champ dans une struct.* Faut-il relancer Scry ? **Oui**, et
   rien d'autre.
 - *Je rejoue hier soir un enregistrement fait sur la SHM.* Faut-il
-  recompiler ? **Non** : même binaire, autre plugin choisi à l'exécution.
+  recompiler ? **Non** : même exécutable, autre plugin choisi à l'exécution.
 
 Si Scry connaissait les plugins, chaque nouveau transport imposerait une
 évolution de Scry, et le même build ne pourrait plus enregistrer en direct
@@ -533,11 +533,22 @@ C'est la piste D5 de [AMELIORATIONS.md](AMELIORATIONS.md), précisée.
 
 ## 10. À trancher
 
-1. **Descripteur compilé ou chargé ?** Compilé dans RAVEN, c'est le plus
-   simple, mais il faut un binaire par projet. Chargé depuis un fichier
-   `.rvndesc` généré par Scry, un seul binaire RAVEN sert tous les projets.
-   Comme le descripteur est de toute façon sérialisé dans chaque
-   enregistrement, le second choix ne coûte presque rien de plus.
+1. **Descripteur compilé ou chargé ?** La question porte sur l'exécutable
+   `raven.exe`, pas sur la glue du simulateur, qui est compilée dans le
+   simulateur dans les deux cas.
+   - *Compilé* : Scry génère `raven_desc.gen.cpp`, compilé dans `raven.exe`.
+     L'exécutable ne connaît qu'un projet, et un header modifié impose de
+     recompiler RAVEN.
+   - *Chargé* : Scry génère un fichier de données (`sim_a.rvndesc`), que
+     `raven.exe` lit au démarrage (`raven.exe --desc sim_a.rvndesc`). Le même
+     exécutable sert tous les projets et toutes les versions ; un header
+     modifié impose seulement de relancer Scry.
+
+   Pour rejouer un vieil enregistrement, RAVEN doit de toute façon savoir lire
+   le descripteur écrit en tête du fichier : le code de chargement existe
+   donc dans les deux cas, et *chargé* ne coûte presque rien de plus. Le
+   risque d'un fichier de descripteur qui ne correspond pas est couvert par
+   le `layout_hash` de chaque trame.
 2. **Où vit `raven/producer.h`** : dans RAVEN, vendu au simulateur, ou copié
    par Scry à côté de la glue ? Dans les deux cas, il doit rester un header
    seul, sans dépendance.
