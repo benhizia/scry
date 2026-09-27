@@ -107,7 +107,7 @@ faiblesses dominent :
 | D2 | Cibles 32 bits et big-endian | Modèle | 2 | M | P3 |
 | D3 | Diff d'ABI : renommages et déplacements | Modèle | 2 | S | P3 |
 | D4 | Schéma JSON versionné du modèle | Modèle | 2 | S | P3 |
-| D5 | Glue pour l'outil d'acquisition : tables de canaux et d'adresses | Modèle | 4 | M | P2 |
+| D5 | Glue pour RAVEN : tables de canaux et d'adresses | Modèle | 4 | M | P2 |
 | E1 | Cache de parsing par défaut, mesuré et documenté | Adoption | 4 | S | P1 |
 | E2 | Bindings découpés en plusieurs unités de compilation | Adoption | 3 | M | P2 |
 | E3 | Paquet installable : wheel, castxml en dépendance | Adoption | 3 | S | P2 |
@@ -265,7 +265,7 @@ généré sans setter. Un mode `--read-only` pour les scripts d'observation.
 
 #### B7. Enregistrement et rejeu d'un vol · P2 · L
 
-> **Hors périmètre Scry** : relève de l'outil d'acquisition, voir
+> **Hors périmètre Scry** : relève de RAVEN, voir
 > [ARCHITECTURE_BRIQUES.md](ARCHITECTURE_BRIQUES.md). Scry fournit la
 > description et la glue ; l'enregistrement sans perte et le rejeu temps réel
 > sont ailleurs.
@@ -334,7 +334,7 @@ s'évaluent sur les valeurs décodées.
 
 #### C5. Transport réseau · P3 · M
 
-> **Hors périmètre Scry** : relève de l'outil d'acquisition, voir
+> **Hors périmètre Scry** : relève de RAVEN, voir
 > [ARCHITECTURE_BRIQUES.md](ARCHITECTURE_BRIQUES.md) et l'étude
 > [ETUDE_SOURCES.md](ETUDE_SOURCES.md).
 
@@ -385,9 +385,9 @@ version 1) pour les outils tiers, et tester sa rétrocompatibilité.
 
 ---
 
-#### D5. Glue pour l'outil d'acquisition · P2 · M
+#### D5. Glue pour RAVEN · P2 · M
 
-**Problème.** L'outil d'acquisition ne parse pas de headers : il lui faut une
+**Problème.** RAVEN ne parse pas de headers : il lui faut une
 description compilée de ce qu'il doit lire.
 
 **Proposition.** Générer, depuis le modèle, des tables C++ : pour une mémoire

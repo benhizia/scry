@@ -7,7 +7,7 @@ Faut-il des plugins ? Que faire du fractionnement réseau et des gros volumes ?
 
 > **Périmètre révisé.** L'essentiel de cette étude (transport réseau,
 > multicast, enregistrement sans perte, rejeu, contre-pression) relève d'un
-> **outil d'acquisition distinct**, qui se sert de Scry sans en faire partie.
+> **outil d'acquisition distinct** (RAVEN), qui se sert de Scry sans en faire partie.
 > Voir [ARCHITECTURE_BRIQUES.md](ARCHITECTURE_BRIQUES.md). Dans Scry, il ne
 > reste que l'interface de plugin de source, minimale, pour que ses
 > visualiseurs lisent des données produites ailleurs.

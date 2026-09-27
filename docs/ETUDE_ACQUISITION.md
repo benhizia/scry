@@ -1,4 +1,4 @@
-# Étude : l'outil d'acquisition — pointeurs, rejeu à froid, réseau
+# Étude : RAVEN, l'outil d'acquisition — pointeurs, rejeu à froid, réseau
 
 Document d'analyse, **sans modification de code**. Il complète
 [ARCHITECTURE_BRIQUES.md](ARCHITECTURE_BRIQUES.md) sur quatre questions :
@@ -43,7 +43,7 @@ y a trois façons de le faire, avec des conséquences très différentes :
 ### Conséquences sur l'architecture
 
 - **A et B ramènent au cas contigu** du document précédent : une fois dans la
-  SHM, tout est à un offset connu, l'outil d'acquisition lit des régions et
+  SHM, tout est à un offset connu, RAVEN lit des régions et
   n'a jamais besoin d'un pointeur du simulateur.
 - **Le collecteur de A est de la glue**, exactement la piste D5 : Scry connaît
   chaque type et sa taille, il peut générer la fonction de collecte
@@ -230,7 +230,7 @@ flowchart LR
 | Brique | Conséquence |
 |---|---|
 | **Scry** | générer, en plus de la glue existante : le **collecteur** et le **catalogue** d'une SHM (§ 1), les **tables de correctifs de pointeurs et les masques d'exclusion** par type (§ 2), les **descripteurs de messages** pour le découpage réseau (§ 3, § 4) |
-| **Outil d'acquisition** | un fil par rôle (réception, enregistrement, analyse, IHM) ; files sans verrou ; relocation au rejeu ; sentinelles ; enregistrement par région avec base d'origine et `layout_hash` |
+| **RAVEN** | un fil par rôle (réception, enregistrement, analyse, IHM) ; files sans verrou ; relocation au rejeu ; sentinelles ; enregistrement par région avec base d'origine et `layout_hash` |
 | **Simulateur** | un appel en fin de cycle : collecte (ou rien si les zones vivent en SHM), compteur, événement |
 | **Visualiseurs Scry** | lisent le dernier état et les événements via le plugin de source fourni par l'outil |
 

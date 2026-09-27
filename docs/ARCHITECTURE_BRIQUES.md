@@ -122,16 +122,16 @@ flowchart LR
         direction TB
         T["Couche test Scry<br/>Python embarqué,<br/>dans le cycle"]
         SIM["Simulateur"]
-        A["Outil d'acquisition<br/>(nouvel outil)<br/>SHM · TCP · multicast · fichier<br/>enregistrement sans perte · rejeu"]
+        A["RAVEN<br/>(outil d'acquisition)<br/>SHM · TCP · multicast · fichier<br/>enregistrement sans perte · rejeu"]
         V["Visualiseurs Scry<br/>différé, paresseux"]
         T <-- "pointeurs,<br/>même processus" --> SIM
         SIM -- "SHM, multicast" --> A
-        A -- "flux, enregistrements<br/>(plugin fourni par l'outil)" --> V
+        A -- "flux, enregistrements<br/>(plugin fourni par RAVEN)" --> V
         SIM -. "inspection<br/>ponctuelle" .-> V
     end
 
-    G == "compilée dans<br/>simulateur, test, acquisition" ==> RUN
-    D == "lu par<br/>acquisition, visualiseurs" ==> RUN
+    G == "compilée dans<br/>simulateur, test, RAVEN" ==> RUN
+    D == "lu par<br/>RAVEN, visualiseurs" ==> RUN
 ```
 
 ### Scry : décrire, vérifier, générer, visualiser en différé
@@ -158,7 +158,10 @@ layout, vérifier une valeur, prévisualiser.
 Elle consomme la glue pybind de Scry. Elle vit aujourd'hui dans `autotest/`,
 déjà séparée du paquet ; elle pourra devenir un paquet à part si besoin.
 
-### L'outil d'acquisition : le plan de données temps réel
+### RAVEN, l'outil d'acquisition : le plan de données temps réel
+
+**RAVEN** : *Record, Acquire, Verify, Export, Navigate*. Il capture tout,
+sans perte, et rejoue.
 
 | Fait | Ne fait pas |
 |---|---|
@@ -180,19 +183,19 @@ Le point le plus important : **ce que les briques échangent, et dans quel sens.
 
 | Échange | Producteur | Consommateur | Forme |
 |---|---|---|---|
-| Descripteur | Scry | outil d'acquisition, visualiseurs | modèle JSON versionné (`format`, `version`, plateforme, structures, `layout_hash`) |
-| Glue générée | Scry | simulateur, couche test, outil d'acquisition | sources C++ et bindings, compilés dans chaque binaire |
-| Trames, enregistrements | outil d'acquisition | visualiseurs Scry | via un plugin de source livré par l'outil |
+| Descripteur | Scry | RAVEN, visualiseurs | modèle JSON versionné (`format`, `version`, plateforme, structures, `layout_hash`) |
+| Glue générée | Scry | simulateur, couche test, RAVEN | sources C++ et bindings, compilés dans chaque binaire |
+| Trames, enregistrements | RAVEN | visualiseurs Scry | via un plugin de source livré par l'outil |
 
-**Règle de dépendance** : l'outil d'acquisition dépend de Scry **au build
-seulement** (descripteur et glue). Scry ne dépend jamais de l'outil
-d'acquisition. Pour que les visualiseurs Scry lisent ses données, c'est
+**Règle de dépendance** : RAVEN dépend de Scry **au build
+seulement** (descripteur et glue). Scry ne dépend jamais de
+RAVEN. Pour que les visualiseurs Scry lisent ses données, c'est
 l'outil qui fournit le plugin de source, en implémentant l'interface définie
 par Scry : c'est l'inversion de dépendance, et c'est ce qui justifie
 l'interface de plugin côté Scry, même minimale.
 
 **Garde-fou** : chaque trame et chaque enregistrement porte le `layout_hash`.
-Un visualiseur ou un outil d'acquisition qui reçoit une empreinte différente
+Un visualiseur ou RAVEN qui reçoit une empreinte différente
 de celle de son descripteur refuse de décoder : c'est le même principe que les
 `static_assert`, appliqué à l'exécution.
 
@@ -203,10 +206,10 @@ de celle de son descripteur refuse de décoder : c'est le même principe que les
 | Élément | Aujourd'hui | Proposition |
 |---|---|---|
 | `MemorySource` (Python) | interface interne | devient l'interface de plugin de source, minimale : lecture d'un instantané |
-| `scry_shm.h`, `scry producer`, `scry watch` | canal SHM avec seqlock, producteur de démo | restent dans Scry comme **outils d'inspection** (au mieux, dernière valeur) ; à ne pas confondre avec un transport. Question ouverte : ce protocole devient-il le format SHM de l'outil d'acquisition, ou reste-t-il une démo ? |
-| Couche test (`autotest/`) | dans le dépôt Scry | reste dans le périmètre de Scry, distincte de l'outil d'acquisition |
-| Pistes B7 (rejeu) et C5 (réseau) du rapport | pistes pour Scry | relèvent de l'outil d'acquisition |
-| Nouvelle piste pour Scry | — | **générer la glue de l'outil d'acquisition** : tables de canaux (région, offset, taille, empreinte) pour une mémoire contiguë, tables d'adresses pour une mémoire dispersée |
+| `scry_shm.h`, `scry producer`, `scry watch` | canal SHM avec seqlock, producteur de démo | restent dans Scry comme **outils d'inspection** (au mieux, dernière valeur) ; à ne pas confondre avec un transport. Question ouverte : ce protocole devient-il le format SHM de RAVEN, ou reste-t-il une démo ? |
+| Couche test (`autotest/`) | dans le dépôt Scry | reste dans le périmètre de Scry, distincte de RAVEN |
+| Pistes B7 (rejeu) et C5 (réseau) du rapport | pistes pour Scry | relèvent de RAVEN |
+| Nouvelle piste pour Scry | — | **générer la glue de RAVEN** : tables de canaux (région, offset, taille, empreinte) pour une mémoire contiguë, tables d'adresses pour une mémoire dispersée |
 
 ---
 
@@ -217,12 +220,12 @@ de celle de son descripteur refuse de décoder : c'est le même principe que les
 
 1. **Mémoire contiguë ou dispersée** dans ton simulateur ? Une SHM de 50 Mo
    pensée comme une struct racine, ou des variables réparties ?
-2. **Qui signale la fin de cycle** à l'outil d'acquisition : un compteur seul
+2. **Qui signale la fin de cycle** à RAVEN : un compteur seul
    (on détecte les pertes), un événement (on les évite), ou une file
    circulaire alimentée par le simulateur ?
 3. **Quelle part des 50 Mo change à chaque cycle** ? Elle décide si les deltas
    suffisent à tenir le débit d'enregistrement.
 4. **Le multicast** a-t-il déjà son protocole (en-tête, séquence) ? Si oui,
    l'outil l'enregistre tel quel ; sinon, il adopte la trame commune.
-5. **Le protocole SHM actuel de Scry** : format de l'outil d'acquisition, ou
+5. **Le protocole SHM actuel de Scry** : format de RAVEN, ou
    simple démo d'inspection ?
