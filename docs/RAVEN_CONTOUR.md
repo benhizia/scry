@@ -121,6 +121,10 @@
 
 ## Partie 2 : ce qu'on pourrait ajouter par la suite
 
+**Priorités retenues, après validation du logiciel minimal** : tampon de
+pré-déclenchement, index avec robustesse aux coupures, pilotage par
+l'autotest.
+
 Rien de ce qui suit n'a été discuté. À trier avant toute spécification.
 
 ### Enregistrement
