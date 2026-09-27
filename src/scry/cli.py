@@ -154,6 +154,21 @@ def cmd_diff(args, cfg):
     return 1 if args.strict and not result.empty else 0
 
 
+def cmd_raven(args, cfg):
+    from scry.codegen import raven
+    introspector = Introspector(cfg)
+    introspector.parse(args.header)
+    names = args.channel or cfg.get_list("raven", "channels")
+    out_dir = args.out or str(cfg.output_dir)
+    name = args.name or cfg.get("raven", "name", "") or "raven"
+    headers = [os.path.abspath(h).replace(os.sep, "/")
+               for h in introspector.report.parsed]
+    for written in raven.generate(introspector.variables, names, out_dir, name, headers):
+        print("Ecrit : %s" % written)
+    _print_report(introspector, args.verbose)
+    return 1 if introspector.report.conflicts else 0
+
+
 def cmd_producer(args, cfg):
     """Genere et compile le producteur de demonstration, et le lance au besoin."""
     from scry import producer
@@ -338,6 +353,13 @@ def main(argv=None):
     p_diff.add_argument("--strict", action="store_true",
                         help="code 1 aussi pour un simple ajout (structure ou membre)")
     sub.add_parser("ui", parents=[common], help="visualiseur ImGui")
+    p_raven = sub.add_parser("raven", parents=[common],
+                             help="genere le descripteur .rvndesc et la glue de publication RAVEN")
+    p_raven.add_argument("--channel", action="append", metavar="VARIABLE",
+                         help="variable globale publiee comme canal, cumulable "
+                              "(defaut : [raven] channels, sinon toutes)")
+    p_raven.add_argument("--name", help="nom du descripteur (defaut : [raven] name)")
+    p_raven.add_argument("-o", "--out", help="dossier de sortie (defaut : [paths] output)")
     p_prod = sub.add_parser("producer", parents=[common],
                             help="compile le producteur de demonstration en memoire partagee")
     p_prod.add_argument("--run", action="store_true", help="le lance apres compilation")
@@ -372,7 +394,7 @@ def main(argv=None):
 
     handlers = {"check": cmd_check, "dump": cmd_dump, "gen": cmd_gen,
                 "json": cmd_json, "diff": cmd_diff, "ui": cmd_ui, "verify": cmd_verify,
-                "producer": cmd_producer, "watch": cmd_watch,
+                "producer": cmd_producer, "watch": cmd_watch, "raven": cmd_raven,
                 "viewer": cmd_viewer}
     handler = handlers.get(args.cmd)
     if handler is None:
