@@ -167,9 +167,10 @@ sans perte, et rejoue.
 |---|---|
 | Acquérir : SHM contiguë ou collecte dispersée, TCP, multicast, fichier | Parser des headers : il n'a ni castxml ni pygccxml |
 | Enregistrer **sans perte**, ou en signalant chaque perte | Décrire ou deviner un layout |
-| Rejouer avec l'horloge d'origine, vitesse, navigation ; réinjecter si besoin | Afficher des valeurs décodées (il délègue aux visualiseurs) |
+| Rejouer avec l'horloge d'origine, vitesse, navigation ; réinjecter si besoin | Connaître les types du projet autrement que par le descripteur généré |
 | Tenir le débit : sélection, deltas, compression, contre-pression | |
-| Fournir un **plugin de source** pour que les visualiseurs Scry lisent ses flux et ses fichiers | |
+| Afficher : IHM imgui en C++, paresseuse, construite depuis le descripteur | |
+| Porter le **système de plugins** de sources (SHM, TCP, multicast, fichier, intermédiaire) | |
 
 C'est lui qui porte l'essentiel de [ETUDE_SOURCES.md](ETUDE_SOURCES.md) : trame
 commune, TCP ou UDP, gros volumes, contre-pression, format de rejeu. Ses
@@ -185,14 +186,14 @@ Le point le plus important : **ce que les briques échangent, et dans quel sens.
 |---|---|---|---|
 | Descripteur | Scry | RAVEN, visualiseurs | modèle JSON versionné (`format`, `version`, plateforme, structures, `layout_hash`) |
 | Glue générée | Scry | simulateur, couche test, RAVEN | sources C++ et bindings, compilés dans chaque binaire |
-| Trames, enregistrements | RAVEN | visualiseurs Scry | via un plugin de source livré par l'outil |
+| Trames, enregistrements | RAVEN | RAVEN (rejeu, IHM) | format de fichier auto-descriptif : descripteur en tête, `layout_hash` par trame |
 
 **Règle de dépendance** : RAVEN dépend de Scry **au build
-seulement** (descripteur et glue). Scry ne dépend jamais de
-RAVEN. Pour que les visualiseurs Scry lisent ses données, c'est
-l'outil qui fournit le plugin de source, en implémentant l'interface définie
-par Scry : c'est l'inversion de dépendance, et c'est ce qui justifie
-l'interface de plugin côté Scry, même minimale.
+seulement** (descripteur et glue). Scry ne dépend jamais de RAVEN et ne
+connaît pas ses plugins : il vise seulement le contrat de données
+`raven/descriptor.h`. Le visualiseur Python de Scry reste une preuve de
+concept ; l'IHM de RAVEN est en C++. Le détail, avec du pseudo-code, est dans
+[RAVEN_GLUE.md](RAVEN_GLUE.md).
 
 **Garde-fou** : chaque trame et chaque enregistrement porte le `layout_hash`.
 Un visualiseur ou RAVEN qui reçoit une empreinte différente
