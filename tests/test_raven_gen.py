@@ -3,7 +3,10 @@ import os
 
 import pytest
 
+import toolchain
 from scry.codegen import raven
+
+pytestmark = toolchain.needs_castxml
 
 HEADER = os.path.join(os.path.dirname(__file__), "..", "raven", "demo", "sim_state.h")
 

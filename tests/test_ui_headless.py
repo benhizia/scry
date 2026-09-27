@@ -4,7 +4,6 @@ Aucun OpenGL : new_frame, draw, render, sans rendu des draw lists. Saute si
 pyimgui ou castxml manque.
 """
 
-import shutil
 import struct
 import uuid
 from multiprocessing import shared_memory
@@ -13,7 +12,9 @@ import pytest
 
 imgui = pytest.importorskip("imgui")
 pytest.importorskip("glfw")
-pytestmark = pytest.mark.skipif(not shutil.which("castxml"), reason="castxml absent")
+import toolchain  # noqa: E402
+
+pytestmark = toolchain.needs_castxml
 
 from scry.config import load_config  # noqa: E402
 from scry.runtime import shm  # noqa: E402
@@ -28,9 +29,9 @@ def ui(tmp_path):
     (tmp_path / "demo.h").write_text(HEADER_H, encoding="utf-8")
     segment = "scry_ui_%s" % uuid.uuid4().hex[:8]
     ini = tmp_path / "scry.ini"
-    ini.write_text("[paths]\nheaders = demo.h\ncache =\n[castxml]\ncompiler = gcc\n"
-                   "extra_cflags = -Wno-pragma-once-outside-header\n"
-                   "[shm]\nname = %s\n" % segment, encoding="utf-8")
+    ini.write_text(toolchain.ini_paths(headers="demo.h")
+                   + toolchain.ini_castxml()
+                   + "[shm]\nname = %s\n" % segment, encoding="utf-8")
     ctx = imgui.create_context()
     io = imgui.get_io()
     io.display_size = (1600, 900)

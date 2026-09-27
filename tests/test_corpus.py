@@ -5,20 +5,21 @@ templates, packing, types imbriques, statiques et amis, RAII, interfaces,
 C++ moderne, commentaires. Pour chacun, avec et sans membres non publics :
 
   1. le parsing reussit ;
-  2. le modele tient face a g++ : abi_checks.generated.h compile ;
+  2. le modele tient face au compilateur du poste, cl ou g++ :
+     abi_checks.generated.h compile ;
   3. si Dear ImGui est present dans third_party/imgui, le header ImGui
      genere compile en -Wall -Wextra -Werror, se lie sans la bibliotheque
      d'aucun tiers, et ses fonctions de rendu s'executent en headless.
 
-Tout saute proprement sur un poste sans castxml ou sans g++.
+Tout saute proprement sur un poste sans castxml ou sans compilateur C++.
 """
 
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+import toolchain
 from scry import verify
 from scry.codegen import generator
 from scry.config import load_config
@@ -30,20 +31,21 @@ IMGUI = ROOT / "third_party" / "imgui"
 HEADLESS = Path(__file__).resolve().parent / "cpp" / "headless.cpp"
 IMGUI_SOURCES = ["imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp"]
 
-pytestmark = pytest.mark.skipif(
-    not (shutil.which("castxml") and shutil.which("g++")),
-    reason="castxml ou g++ absent")
+# C4324 : MSVC previent qu'une struct alignas est completee par du padding.
+# C'est le sujet meme de 05_packed_alignment.hpp, pas un defaut du code genere.
+QUIET = ["/wd4324"] if toolchain.IS_MSVC else []
+
+pytestmark = toolchain.needs_toolchain
 
 
 def _cfg(tmp_path, non_public):
     ini = tmp_path / "scry.ini"
     ini.write_text(
-        "[paths]\noutput = %s\ncache =\n"
-        "[castxml]\ncompiler = gcc\n"
-        "extra_cflags = -Wno-pragma-once-outside-header\n"
-        "[introspection]\ninclude_non_public = %s\n"
-        "[verify]\ngnu_profiles = release: -O2\n"
-        % ((tmp_path / "out").as_posix(), "true" if non_public else "false"),
+        toolchain.ini_paths(output=(tmp_path / "out").as_posix())
+        + toolchain.ini_castxml()
+        + "[introspection]\ninclude_non_public = %s\n"
+        % ("true" if non_public else "false")
+        + toolchain.ini_verify("release"),
         encoding="utf-8")
     return load_config(ini)
 
@@ -65,7 +67,7 @@ def _sans_surcharge(monkeypatch):
 
 @pytest.mark.parametrize("non_public", [False, True], ids=["public", "non_public"])
 @pytest.mark.parametrize("header", CORPUS, ids=[h.name for h in CORPUS])
-def test_modele_tient_face_a_gxx(tmp_path, header, non_public):
+def test_modele_tient_face_au_compilateur(tmp_path, header, non_public):
     cfg = _cfg(tmp_path, non_public)
     structs = _parse(cfg, header)
     _, results = verify.run(structs, cfg, verify.load_profiles(cfg))
@@ -108,9 +110,10 @@ def imgui_objects(tmp_path_factory):
     objects = []
     procs = []
     for src in IMGUI_SOURCES:
-        obj = out / (Path(src).stem + ".o")
+        obj = out / (Path(src).stem + toolchain.OBJ_SUFFIX)
         procs.append(subprocess.Popen(
-            ["g++", "-std=c++17", "-O0", "-c", str(IMGUI / src), "-o", str(obj)]))
+            toolchain.compile_object(IMGUI / src, obj, external=[IMGUI]),
+            cwd=str(out), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         objects.append(str(obj))
     assert all(p.wait() == 0 for p in procs)
     return objects
@@ -122,12 +125,10 @@ def test_rendu_genere_compile_et_s_execute(tmp_path, header, non_public, imgui_o
     cfg = _cfg(tmp_path, non_public)
     structs = _parse(cfg, header)
     generator.generate(structs, cfg)
-    exe = tmp_path / "headless"
-    cmd = ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
-           "-I%s" % (tmp_path / "out"), "-I%s" % IMGUI, "-I%s" % header.parent,
-           str(HEADLESS)] + imgui_objects + ["-o", str(exe)]
-    build = subprocess.run(cmd, capture_output=True, text=True)
-    assert build.returncode == 0, build.stderr[-4000:]
+    exe = tmp_path / toolchain.exe_name("headless")
+    toolchain.check(toolchain.compile_exe(
+        [HEADLESS], exe, includes=[tmp_path / "out", header.parent],
+        external=[IMGUI], objects=imgui_objects, extra=QUIET))
     run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, run.stderr
     assert "structures=%d" % len(structs) in run.stdout
@@ -180,9 +181,10 @@ def test_bindings_pybind_compilent(tmp_path, header):
     structs = introspector.parse(str(header))
     assert not introspector.report.failures, introspector.report.lines()
     pybind.generate(structs, cfg, variables=introspector.variables)
-    cmd = ["g++", "-std=c++17", "-fsyntax-only", "-Wall", "-Wextra", "-Werror",
-           "-Wno-unused-variable", "-I%s" % (tmp_path / "out"), "-I%s" % header.parent,
-           "-I%s" % pybind11.get_include(), "-I%s" % include,
-           str(tmp_path / "out" / pybind.module_source_name(cfg))]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr[-4000:]
+    # Une variable statique du header de test n'est utilisee par personne :
+    # ce n'est pas un defaut des bindings.
+    unused = ["/wd4101"] + QUIET if toolchain.IS_MSVC else ["-Wno-unused-variable"]
+    toolchain.check(toolchain.syntax_only(
+        [tmp_path / "out" / pybind.module_source_name(cfg)],
+        includes=[tmp_path / "out", header.parent],
+        external=[pybind11.get_include(), include], extra=unused))

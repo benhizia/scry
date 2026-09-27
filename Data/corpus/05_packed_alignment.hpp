@@ -17,7 +17,22 @@ struct alignas(16) AlignedStruct {
 };
 
 /// Packed structure to minimize size
-struct __attribute__((packed)) PackedStruct {
+// Compactage : __attribute__((packed)) chez gcc et clang, #pragma pack chez
+// MSVC. castxml definit _MSC_VER quand il cible MSVC : les deux compilateurs
+// voient alors le meme layout, et les static_assert generes tiennent des deux
+// cotes.
+#if defined(_MSC_VER)
+#  define CORPUS_PACK_PUSH __pragma(pack(push, 1))
+#  define CORPUS_PACK_POP  __pragma(pack(pop))
+#  define CORPUS_PACKED
+#else
+#  define CORPUS_PACK_PUSH
+#  define CORPUS_PACK_POP
+#  define CORPUS_PACKED __attribute__((packed))
+#endif
+
+CORPUS_PACK_PUSH
+struct CORPUS_PACKED PackedStruct {
     // Mixed data types without padding
     uint8_t type_id;
     uint32_t data_value;
@@ -25,6 +40,7 @@ struct __attribute__((packed)) PackedStruct {
     uint8_t flags;
     uint64_t timestamp;
 };
+CORPUS_PACK_POP
 
 /// Structure with explicit member alignment
 struct MixedAlignment {

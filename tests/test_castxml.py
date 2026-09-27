@@ -57,3 +57,24 @@ def test_introuvable_nulle_part(monkeypatch):
     monkeypatch.setattr(utils, "find_xml_generator", lambda *a, **k: (None, None))
     with pytest.raises(msvc_env.MsvcNotFound, match="PATH"):
         msvc_env.locate_castxml(load_config(EXAMPLE_INI))
+
+
+def test_vcvars_charge_une_seule_fois(tmp_path, monkeypatch):
+    """Chaque appel de vcvars empile PATH, INCLUDE et LIB : au bout de
+    quelques appels dans le meme processus, plus aucun sous-processus ne
+    demarre. Le second appel doit donc etre servi de memoire."""
+    script = tmp_path / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
+    script.parent.mkdir(parents=True)
+    script.write_text("", encoding="utf-8")
+    appels = []
+
+    def faux_set(cmd, **kwargs):
+        appels.append(cmd)
+        return "INCLUDE=a;b" + chr(10) + "LIB=c;d" + chr(10)
+
+    monkeypatch.setattr(msvc_env.subprocess, "check_output", faux_set)
+    monkeypatch.setattr(msvc_env, "_VCVARS_APPLIED", {})
+    premier = msvc_env.apply_vcvars(tmp_path)
+    second = msvc_env.apply_vcvars(tmp_path)
+    assert len(appels) == 1
+    assert premier == second and premier["INCLUDE"] == "a;b"

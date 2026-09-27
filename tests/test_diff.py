@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import toolchain
 from scry import cli, diff, model
 from scry.config import load_config
 
@@ -105,7 +106,7 @@ def test_cli_code_de_retour(tmp_path, capsys):
     assert "[CASSE ] S" in capsys.readouterr().out
 
 
-@pytest.mark.skipif(not __import__("shutil").which("castxml"), reason="castxml absent")
+@toolchain.needs_castxml
 def test_deux_livraisons_d_un_header(tmp_path, capsys):
     v1 = "#pragma once\nstruct Etat { int mode; double vitesse; char nom[8]; };\n"
     # Livraison 2 : un int loge dans le trou de padding, rien ne bouge.
@@ -114,8 +115,8 @@ def test_deux_livraisons_d_un_header(tmp_path, capsys):
     v3 = "#pragma once\nstruct Etat { int mode; double t; double vitesse; char nom[8]; };\n"
     header = tmp_path / "tiers.h"
     ini = tmp_path / "scry.ini"
-    ini.write_text("[paths]\nheaders = tiers.h\ncache =\n[castxml]\ncompiler = gcc\n"
-                   "extra_cflags = -Wno-pragma-once-outside-header\n", encoding="utf-8")
+    ini.write_text(toolchain.ini_paths(headers="tiers.h") + toolchain.ini_castxml(),
+                   encoding="utf-8")
     ref = tmp_path / "ref.json"
     header.write_text(v1, encoding="utf-8")
     assert cli.main(["json", str(ref), "-c", str(ini)]) == 0

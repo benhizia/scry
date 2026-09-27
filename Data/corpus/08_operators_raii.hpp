@@ -2,7 +2,14 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <sys/types.h>  // ssize_t (POSIX)
+// ssize_t est POSIX : MSVC ne l'a pas. Meme taille qu'un ptrdiff_t, ce qui
+// suffit a ce corpus ; castxml definit _MSC_VER quand il cible MSVC.
+#if defined(_MSC_VER)
+#  include <cstddef>
+using ssize_t = std::ptrdiff_t;
+#else
+#  include <sys/types.h>
+#endif
 
 /// Class demonstrating operator overloading and RAII
 class SmartPointer {

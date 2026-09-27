@@ -140,12 +140,27 @@ def find_castxml(cfg: Config) -> Path:
 # ---------------------------------------------------------------------------
 # Environnement de compilation
 # ---------------------------------------------------------------------------
+# Environnements vcvars deja charges dans ce processus, par (script, toolset).
+_VCVARS_APPLIED = {}
+
+
 def apply_vcvars(vs_root: Path, arch: str = "x64", toolset: str = "") -> dict:
-    """Charge vcvars dans os.environ. Retourne les variables ajoutees ou modifiees."""
+    """Charge vcvars dans os.environ. Retourne les variables ajoutees ou modifiees.
+
+    Memorise par (script, toolset) : chaque execution de vcvars ajoute ses
+    chemins en tete de PATH, INCLUDE et LIB. Dans un processus qui enchaine les
+    appels (suite de tests, IHM qui compile plusieurs fois, scry verify sur
+    plusieurs profils), l'environnement finit par depasser la limite de
+    Windows, et plus aucun sous-processus ne demarre.
+    """
     name = "vcvars64.bat" if arch == "x64" else "vcvars32.bat"
     vcvars = vs_root / "VC" / "Auxiliary" / "Build" / name
     if not vcvars.is_file():
         raise MsvcNotFound("Script introuvable : %s" % vcvars)
+
+    key = (str(vcvars), toolset)
+    if key in _VCVARS_APPLIED:
+        return _VCVARS_APPLIED[key]
 
     cmd = '"%s"%s >nul 2>&1 && set' % (
         vcvars,
@@ -157,16 +172,17 @@ def apply_vcvars(vs_root: Path, arch: str = "x64", toolset: str = "") -> dict:
     for line in out.splitlines():
         if "=" not in line:
             continue
-        key, _, value = line.partition("=")
-        if os.environ.get(key) != value:
-            os.environ[key] = value
-            changed[key] = value
+        var, _, value = line.partition("=")
+        if os.environ.get(var) != value:
+            os.environ[var] = value
+            changed[var] = value
 
     if len(os.environ.get("INCLUDE", "").split(";")) < 2:
         raise MsvcNotFound(
             "vcvars n'a pas positionne INCLUDE. Lance '%s' a la main pour voir l'erreur."
             % vcvars
         )
+    _VCVARS_APPLIED[key] = changed
     return changed
 
 
