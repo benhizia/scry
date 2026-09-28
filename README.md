@@ -102,7 +102,27 @@ scry gen --pybind        ajoute les bindings pybind11 : types, variables globale
 ```
 
 Options communes : `-H / --header` cible un autre header, `-c / --config` un
-autre fichier de configuration.
+autre fichier de configuration, `-t / --type` et `-x / --exclude-type` filtrent
+les types.
+
+### Filtrer les types
+
+Un header tiers, avec tout ce qu'il inclut, apporte des centaines de types.
+Le filtre s'applique dans le parsing, donc **toutes** les commandes en
+héritent : ce qui est écarté n'est ni affiché, ni exporté, ni généré.
+
+```
+scry dump -t "sim::*" -x "*::detail::*"      # motifs glob sur le nom qualifié
+```
+
+Les mêmes motifs se figent dans `scry.ini`, en `[introspection] include_types`
+et `exclude_types` ; `exclude` l'emporte toujours sur `include`. Un motif sans
+joker garde aussi les types imbriqués de celui qu'il nomme : `-t sim::Etat`
+conserve `sim::Etat::Interne`.
+
+Dans l'IHM, le champ au-dessus de la liste des structures filtre **l'affichage**
+seulement, par texte ou par motif ; sa valeur de départ est `[ui] type_filter`.
+Le compteur affiche alors `(visibles / total)`.
 
 `python -m scry <commande>` fait exactement la même chose sans dépendre du
 script d'entrée, utile si le venv n'est pas activé ou pour un appel depuis un

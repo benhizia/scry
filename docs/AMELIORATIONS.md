@@ -34,7 +34,7 @@ faiblesses dominent :
 | A1 | CI GitHub Actions Linux + Windows/MSVC | valide enfin la cible réelle à chaque push | M |
 | B1 | Fonctions du header exposées en Python | passer de « lire/écrire » à « piloter » | M |
 | B2 | `std::vector`, `std::string` et pointeurs+taille en vues Python | les interfaces réelles en sont pleines | M |
-| C1 | Filtrage des types (IHM, CLI, config) | conditionne l'usage sur un vrai header | S |
+| C1 | Filtrage des types (IHM, CLI, config) | conditionne l'usage sur un vrai header | S | **fait** |
 | B3 | Rechargement à chaud des scripts embarqués | cycle de mise au point en secondes, sans relancer le simulateur | S |
 
 ---
@@ -97,7 +97,7 @@ faiblesses dominent :
 | B7 | Enregistrement et rejeu d'un vol | Python embarqué | 4 | L | P2 |
 | B8 | Métadonnées des commentaires : unités, bornes | Python embarqué | 4 | M | P2 |
 | B9 | Autotest : couverture des interfaces et fuzzing borné | Python embarqué | 3 | M | P3 |
-| C1 | Filtrage des types | Observation | 5 | S | P1 |
+| C1 | Filtrage des types | Observation | 5 | S | P1, fait |
 | C2 | Édition des valeurs dans les IHM | Observation | 4 | S | P2 |
 | C3 | Courbes live (ImPlot) | Observation | 4 | M | P2 |
 | C4 | Points de surveillance : alerte sur condition | Observation | 3 | S | P2 |
@@ -301,7 +301,7 @@ aléatoires dans les bornes de B8, avec invariants vérifiés à chaque cycle.
 
 ### Axe C : observation et outillage
 
-#### C1. Filtrage des types · P1 · S
+#### C1. Filtrage des types · P1 · S · **fait**
 
 **Problème.** Sur un header réel (et ce qu'il inclut), des centaines de types
 apparaissent. Les IHM, `scry dump` et le code généré deviennent illisibles.
@@ -310,6 +310,13 @@ apparaissent. Les IHM, `scry dump` et le code généré deviennent illisibles.
 le nom qualifié, appliqués après parsing dans `Introspector.parse`, donc
 partagés par toutes les commandes. Dans l'IHM, filtre par namespace
 mémorisé dans `scry.ini`. Même syntaxe que `[pybind] expose`.
+
+**Fait.** Motifs en configuration et en options `-t` / `-x`, `exclude`
+l'emportant sur `include` ; un motif sans joker garde les types imbriqués de
+celui qu'il nomme. `scry dump` annonce le nombre de types écartés, et
+`-v` les nomme. Dans l'IHM, le filtre d'affichage de la liste vient de
+`[ui] type_filter` : il ne retire rien du modèle, contrairement aux deux
+autres, ce que dit l'infobulle.
 
 #### C2. Édition des valeurs dans les IHM · P2 · S
 

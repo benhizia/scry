@@ -92,3 +92,27 @@ def test_memoire_partagee(ui):
         state.disconnect_shm()
         seg.close()
         seg.unlink()
+
+
+def test_filtre_des_types(ui):
+    """Deux filtres distincts : celui de l'affichage, et celui du modele."""
+    app, state, _ = ui
+    noms = {s.name for s in state.structs}
+    assert {"demo::Etat", "demo::Autre"} <= noms
+
+    # Affichage : le modele garde tout, la liste se reduit.
+    state.type_filter = "Autre"
+    assert [s.name for _, s in state.visible_structs()] == ["demo::Autre"]
+    state.type_filter = "demo::E*"                       # motif glob
+    assert [s.name for _, s in state.visible_structs()] == ["demo::Etat"]
+    _frames(app, state)                                  # l'IHM se dessine filtree
+    # La structure choisie ne peut pas rester hors de la liste affichee.
+    assert state.current.name == "demo::Etat"
+    state.type_filter = ""
+    assert len(state.visible_structs()) == len(state.structs)
+
+    # Modele : le type ecarte n'existe plus nulle part.
+    state.include_types = ["demo::Autre"]
+    state.reload()
+    assert [s.name for s in state.structs] == ["demo::Autre"]
+    _frames(app, state)

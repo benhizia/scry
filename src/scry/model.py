@@ -12,8 +12,9 @@ offset ABSOLU depuis le debut de la structure racine. Un lecteur SHM n'a alors
 besoin que d'un pointeur de base et de cet offset.
 """
 
+import fnmatch
 from dataclasses import dataclass, field as dc_field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # Natures de champ.
 FUNDAMENTAL = "fundamental"
@@ -159,6 +160,45 @@ def padding_spans(fields: List[Field], size: Optional[int]) -> List[Tuple[int, i
     if cursor < size:
         holes.append((cursor, size))
     return holes
+
+
+def matches_type(name: str, patterns: Sequence[str]) -> bool:
+    """Nom qualifie confronte a des motifs glob : 'testgen::*', '*::Vec3', 'Etat'.
+
+    Un motif sans joker vaut aussi pour les types imbriques de celui qu'il
+    nomme : 'testgen::FlightPlan' retient 'testgen::FlightPlan::Leg'. Sans
+    cela, filtrer une structure ferait disparaitre ses propres types.
+    """
+    for pattern in patterns:
+        pattern = pattern.strip()
+        if not pattern:
+            continue
+        if fnmatch.fnmatchcase(name, pattern):
+            return True
+        if not any(c in pattern for c in "*?[") and name.startswith(pattern + "::"):
+            return True
+    return False
+
+
+def select_types(structs: Sequence["Struct"], include: Sequence[str] = (),
+                 exclude: Sequence[str] = ()) -> Tuple[List["Struct"], List[str]]:
+    """(types retenus, noms des types ecartes).
+
+    Sans include, tout est retenu. exclude l'emporte toujours sur include,
+    comme [pybind] hide l'emporte sur expose. Un header tiers tire des
+    centaines de types : sans filtre, les IHM, scry dump et le code genere
+    deviennent illisibles.
+    """
+    include = [p for p in include if p and p.strip()]
+    exclude = [p for p in exclude if p and p.strip()]
+    if not include and not exclude:
+        return list(structs), []
+    gardes, ecartes = [], []
+    for struct in structs:
+        garde = (not include or matches_type(struct.name, include)) \
+            and not matches_type(struct.name, exclude)
+        (gardes if garde else ecartes).append(struct)
+    return gardes, [s.name for s in ecartes]
 
 
 def layout_items(fields: List[Field], size: Optional[int], with_holes: bool = True):

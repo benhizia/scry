@@ -75,6 +75,16 @@ include_static = false
 ; les membres herites. Les bases virtuelles sont signalees sans etre placees.
 include_bases = true
 
+; Types retenus, motifs glob sur le nom qualifie, separes par des ;  Vide =
+; tous. Un header tiers et ce qu'il inclut en apportent des centaines : sans
+; filtre, les IHM, 'scry dump' et le code genere deviennent illisibles.
+; Un motif sans joker garde aussi les types imbriques de celui qu'il nomme.
+;   include_types = sim::*; moteur::Etat
+include_types =
+; Types ecartes. L'emporte sur include_types, comme [pybind] hide sur expose.
+;   exclude_types = *::detail::*; std::*
+exclude_types =
+
 ; Motifs de fichiers dont les types sont retenus comme racines, en plus des
 ; headers explicitement parses. Sert a remonter les types definis dans un
 ; header commun atteint via les repertoires d'include, sans pour autant
@@ -114,6 +124,12 @@ imgui_tag = v1.92.9b
 auto_download = false
 ; Executable et objets.
 build_dir = build/viewer
+
+[ui]
+; IHM Python : valeur de depart du filtre d'affichage de la liste des
+; structures. Texte simple, ou motif glob. Il ne retire rien du modele : pour
+; cela, voir [introspection] include_types et exclude_types.
+type_filter =
 
 [shm]
 ; Canal de memoire partagee : 'scry producer', 'scry watch', les deux IHM.

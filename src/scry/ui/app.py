@@ -53,9 +53,17 @@ FIXED = _flag("TABLE_COLUMN_WIDTH_FIXED")
 class AppState(object):
     """Tout l'etat mutable au meme endroit, plutot que disperse dans la boucle."""
 
-    def __init__(self, cfg=None, header=None):
+    def __init__(self, cfg=None, header=None, include_types=None, exclude_types=None):
         self.cfg = cfg if cfg is not None else load_config()
         self.header = header
+        # Filtre du modele : ce qui est parse. Les types ecartes ici ne sont
+        # dans aucune vue, ni dans le C++ genere depuis l'IHM.
+        self.include_types = include_types
+        self.exclude_types = exclude_types
+        # Filtre d'affichage : il ne retire rien du modele. Sa valeur de
+        # depart vient de [ui] type_filter, pour retrouver son perimetre
+        # habituel d'un lancement a l'autre.
+        self.type_filter = self.cfg.get("ui", "type_filter", "")
         self.files = []          # headers effectivement parses
         self.structs = []
         self.problems = []       # rapport de parsing : echecs partiels, conflits
@@ -78,6 +86,10 @@ class AppState(object):
     # -- lecture ------------------------------------------------------------
     def headers_label(self):
         return ", ".join(os.path.basename(p) for p in self.files) or "aucun header"
+
+    def visible_structs(self):
+        """(index, structure) des structures affichees, filtre de la liste."""
+        return tree_mod.filter_structs(self.structs, self.type_filter)
 
     @property
     def current(self):
@@ -103,7 +115,8 @@ class AppState(object):
     def reload(self):
         previous = self.current.name if self.current is not None else None
         self.error, self.problems = "", []
-        introspector = Introspector(self.cfg)
+        introspector = Introspector(self.cfg, include_types=self.include_types,
+                                    exclude_types=self.exclude_types)
         try:
             self.structs = introspector.parse(self.header)
             self.files = list(introspector.report.parsed)
@@ -269,9 +282,26 @@ def _problems(state):
 
 
 def _structs_panel(state, reserve):
+    visibles = state.visible_structs()
     imgui.text("Structures")
     imgui.same_line()
-    imgui.text_disabled("(%d)" % len(state.structs))
+    if len(visibles) == len(state.structs):
+        imgui.text_disabled("(%d)" % len(state.structs))
+    else:
+        imgui.text_disabled("(%d / %d)" % (len(visibles), len(state.structs)))
+    # Le filtre peut masquer la structure choisie : on bascule alors sur la
+    # premiere visible, sinon les autres panneaux montreraient un type absent
+    # de la liste.
+    indices = [i for i, _ in visibles]
+    if indices and state.selected not in indices:
+        state.select_struct(indices[0])
+    imgui.push_item_width(-1)
+    changed, state.type_filter = imgui.input_text("##filtre_types", state.type_filter, 128)
+    imgui.pop_item_width()
+    if imgui.is_item_hovered():
+        imgui.set_tooltip("Filtre d'affichage : texte, ou motif glob ('sim::*').\n"
+                          "Pour ecarter des types du modele lui-meme, voir\n"
+                          "[introspection] include_types et exclude_types, ou -t et -x.")
     if not imgui.begin_table("liste_structures", 3, LIST_FLAGS, 0.0, -reserve):
         return
     imgui.table_setup_scroll_freeze(0, 1)
@@ -279,7 +309,7 @@ def _structs_panel(state, reserve):
     imgui.table_setup_column("sizeof", FIXED, 52)
     imgui.table_setup_column("pad", FIXED, 36)
     imgui.table_headers_row()
-    for index, s in enumerate(state.structs):
+    for index, s in visibles:
         imgui.table_next_row()
         imgui.table_next_column()
         name = s.name + ("  (v)" if s.is_polymorphic else "")
@@ -379,8 +409,9 @@ def draw(state):
     imgui.end()
 
 
-def main(cfg=None, header=None):
-    state = AppState(cfg=cfg, header=header)
+def main(cfg=None, header=None, include_types=None, exclude_types=None):
+    state = AppState(cfg=cfg, header=header, include_types=include_types,
+                     exclude_types=exclude_types)
 
     if not glfw.init():
         raise SystemExit("glfw.init a echoue")
