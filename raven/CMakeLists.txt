@@ -11,6 +11,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(MSVC)
   add_compile_options(/W4 /utf-8)
+  # fopen, sscanf, localtime : MSVC pousse ses variantes _s, qui n'existent
+  # nulle part ailleurs. RAVEN est portable, il garde les fonctions standard.
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 else()
   add_compile_options(-Wall -Wextra)
 endif()
