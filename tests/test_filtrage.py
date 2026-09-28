@@ -7,6 +7,7 @@ qui est ecarte n'est ni affiche, ni exporte, ni genere.
 
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -117,7 +118,30 @@ def test_filtre_d_affichage_texte_et_glob():
 
 
 # -- bout en bout, avec castxml ------------------------------------------------
-HAS_CASTXML = bool(shutil.which("castxml") or os.environ.get("SCRY_PATHS_CASTXML"))
+def _castxml_present() -> bool:
+    """castxml se cherche comme Scry le fait : la variable, puis [paths]
+    castxml du depot, puis le PATH. Un poste Windows l'a rarement dans le
+    PATH, et ces tests doivent quand meme tourner."""
+    import configparser
+    candidats = [os.environ.get("SCRY_PATHS_CASTXML", "")]
+    ini = Path(__file__).resolve().parent.parent / "scry.ini"
+    if ini.is_file():
+        lecteur = configparser.ConfigParser()
+        lecteur.read(ini, encoding="utf-8")
+        candidats.append(lecteur.get("paths", "castxml", fallback="").strip())
+    for candidat in candidats:
+        chemin = Path(candidat) if candidat else None
+        if chemin is None:
+            continue
+        if chemin.is_dir():
+            chemin = chemin / "castxml.exe"
+        if chemin.is_file():
+            os.environ.setdefault("SCRY_PATHS_CASTXML", str(chemin))
+            return True
+    return bool(shutil.which("castxml"))
+
+
+HAS_CASTXML = _castxml_present()
 HEADER = ("#pragma once\nnamespace sim {\n"
           "struct Etat { int mode; };\n"
           "struct Autre { double x; };\n"
