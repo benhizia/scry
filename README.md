@@ -98,7 +98,7 @@ scry verify              compile les assertions ABI (cl, g++ ou clang++), pour c
 scry viewer --run        compile et lance le visualiseur C++ natif (ImGui, DirectX 11)
 scry producer --run      compile et lance le producteur de démo en mémoire partagée
 scry watch               affiche en continu les valeurs publiées dans un canal
-scry gen --pybind        ajoute les bindings pybind11 : types, variables globales, module embarqué
+scry gen --pybind        ajoute les bindings pybind11 : types, variables, fonctions, module embarqué
 ```
 
 Options communes : `-H / --header` cible un autre header, `-c / --config` un
@@ -579,9 +579,9 @@ scry gen --pybind -H app/interfaces.h
 
 | Fichier généré | Rôle |
 |---|---|
-| `scry_pybind.generated.h` | `register_types` (tous les types), `register_globals` (toutes les variables globales), `register_all` |
+| `scry_pybind.generated.h` | `register_types` (types et méthodes), `register_functions` (fonctions libres), `register_globals` (variables globales), `register_all` |
 | `scry_module.generated.cpp` | le module embarqué complet : `PYBIND11_EMBEDDED_MODULE(sut, m) { register_all(m); }` |
-| `sut.pyi` | stub pour l'autocomplétion, variables comprises |
+| `sut.pyi` | stub pour l'autocomplétion, variables et fonctions comprises |
 | `scry_pybind.cmake` | `scry_pybind_embed(mon_app)` : includes, module, `pybind11::embed` |
 
 Côté application, il ne reste qu'à démarrer l'interpréteur et appeler un
@@ -601,7 +601,46 @@ etat = sut.sim.g_etat          # vue typée sur sim::g_etat : aucune copie
 def step():
     etat.moteur.regime += 10   # écrit dans la mémoire C++
     sut.sim.g_temps            # scalaire global : relu à chaque accès
+    etat.moteur.couper()       # méthode du header, appelée en place
+    sut.sim.regler(sut.sim.Mode.Vol)   # fonction libre du header
 ```
+
+### Appeler les fonctions du header
+
+Les fonctions libres des headers et les méthodes publiques non virtuelles sont
+exposées elles aussi : un script ne se contente pas de reposer des variables,
+il pilote. Les arguments sont nommés (`m.pousser(delta=1.5)`), les valeurs par
+défaut reprises quand elles se réécrivent sans risque, les surcharges levées
+par leur signature exacte, et une méthode qui rend une référence rend une
+**vue**, pas une copie :
+
+```python
+moteur = sut.sim.moteur_courant()   # sim::Moteur& : vue sur l'objet du C++
+moteur.regime = 99.0                # écrit dans le simulateur
+assert sut.sim.g_moteur.regime == 99.0
+```
+
+Une seule règle à retenir sur ce qui est lié : **il faut que la définition soit
+dans le header**. Une fonction seulement déclarée, `double compute_trim(const
+Etat&);`, a son symbole dans la bibliothèque du tiers ; la citer ferait échouer
+l'édition de liens du module entier. Elle est donc écartée, et le header généré
+dit pourquoi, en clair, à la ligne où elle aurait dû être. Pour l'exposer quand
+même, il faut la **nommer sans joker** dans `[pybind] functions` : c'est ainsi
+qu'on déclare assumer l'édition de liens.
+
+```ini
+[pybind]
+functions = sim::*; sim::compute_trim   ; le motif large ne suffit pas pour la seconde
+hide_functions = *::detail::*
+```
+
+Sont également écartées, chacune avec sa raison dans le code généré : les
+fonctions variadiques, les méthodes virtuelles — les appeler marcherait, les
+redéfinir depuis Python demanderait une classe relais, et promettre à moitié
+vaut moins que refuser clairement —, les méthodes non publiques, et tout ce qui
+prend ou rend un type que le module n'expose pas (un `std::vector`, une classe
+d'un autre header). `scry dump` liste l'API telle qu'elle est, `declaree
+seulement` compris.
 
 **Ce que Python voit.** Une variable globale devient une propriété du module
 de son namespace (`sim::g_etat` → `sut.sim.g_etat`). Une structure est une vue
@@ -662,9 +701,9 @@ Le brainstorm complet, avec l'état des lieux mesuré, trente pistes chiffrées
 en valeur, effort et risque, et une feuille de route en quatre phases, est dans
 [docs/AMELIORATIONS.md](docs/AMELIORATIONS.md).
 
-En tête de liste : une CI Linux et Windows/MSVC, les fonctions du header et les
-`std::vector` exposés en Python embarqué, le rechargement à chaud des scripts,
-et le filtrage des types sur les gros headers.
+En tête de liste : une CI Linux et Windows/MSVC, les `std::vector` exposés en
+Python embarqué, et le rechargement à chaud des scripts. Le filtrage des types
+et les fonctions du header sont faits.
 
 ---
 

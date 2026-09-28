@@ -32,7 +32,7 @@ faiblesses dominent :
 | # | Piste | Pourquoi maintenant | Effort |
 |---|---|---|---|
 | A1 | CI GitHub Actions Linux + Windows/MSVC | valide enfin la cible réelle à chaque push | M |
-| B1 | Fonctions du header exposées en Python | passer de « lire/écrire » à « piloter » | M |
+| B1 | Fonctions du header exposées en Python | passer de « lire/écrire » à « piloter » | M | **fait** |
 | B2 | `std::vector`, `std::string` et pointeurs+taille en vues Python | les interfaces réelles en sont pleines | M |
 | C1 | Filtrage des types (IHM, CLI, config) | conditionne l'usage sur un vrai header | S | **fait** |
 | B3 | Rechargement à chaud des scripts embarqués | cycle de mise au point en secondes, sans relancer le simulateur | S |
@@ -88,7 +88,7 @@ faiblesses dominent :
 | A3 | Test d'ordre des champs de bits compilé et exécuté | Fiabilité | 3 | S | P2 |
 | A4 | Détection des conteneurs STL illisibles à distance | Fiabilité | 3 | S | P2 |
 | A5 | Offset des bases virtuelles sur l'objet complet | Fiabilité | 2 | M | P3 |
-| B1 | Fonctions du header exposées en Python | Python embarqué | 5 | M | P1 |
+| B1 | Fonctions du header exposées en Python | Python embarqué | 5 | M | P1, fait |
 | B2 | Vues Python sur `std::vector`, `std::string`, pointeur + taille | Python embarqué | 5 | M | P1 |
 | B3 | Rechargement à chaud des scripts | Python embarqué | 4 | S | P1 |
 | B4 | Vue numpy structurée d'une struct entière | Python embarqué | 4 | M | P2 |
@@ -182,7 +182,7 @@ Rare dans les interfaces de simulateur, d'où P3.
 
 ### Axe B : Python embarqué, le cœur de l'usage simulateur
 
-#### B1. Fonctions du header exposées en Python · P1 · M
+#### B1. Fonctions du header exposées en Python · P1 · M · **fait**
 
 **Problème.** Un script peut positionner des variables, pas appeler
 `reset()`, `set_mode(Mode)` ou `compute_trim(const Etat&)`. Aujourd'hui il faut
@@ -205,6 +205,31 @@ n'exposer que ce qui est défini (inline) ou ce qui est explicitement listé.
 
 **Réussite.** `sut.sim.reset()` et `sut.sim.set_mode(sut.sim.Mode.Vol)`
 fonctionnent sans glue.
+
+**Fait.** `model.Function`, `Argument` et `TypeRef` décrivent les fonctions
+libres et les méthodes ; `TypeRef` garde à la fois l'écriture exacte du
+compilateur, seule capable de lever une surcharge, et le type nu, qui dit ce
+qu'il faut enregistrer. Les méthodes s'écrivent sur le `py::class_` de leur
+classe, les fonctions libres dans `register_functions`, qui retrouve son
+sous-module par son chemin (`detail::submodule`). `register_globals` passe
+désormais en dernier dans `register_all` : il ferme le module, et poser une
+fonction après lui serait refusé par son propre garde-fou.
+
+Le risque d'édition de liens est traité comme prévu : seule une fonction
+**définie** dans le header est liée, et un motif sans joker dans
+`[pybind] functions` vaut autorisation explicite pour les autres — même
+convention que « un motif sans joker garde aussi les types imbriqués » de C1.
+Chaque refus est écrit en commentaire à sa place dans le header généré, avec sa
+raison : variadique, virtuelle, non publique, type absent du module. Les
+défauts d'arguments ne sont repris que s'ils se réécrivent sans risque
+(littéral ou nom qualifié) ; au premier qui résiste, celui-là et les suivants
+deviennent obligatoires, puisque C++ et pybind11 les veulent en queue.
+
+Preuves : `tests/test_pybind_embed.py` appelle réellement méthodes, surcharges,
+méthode statique, fonctions libres et namespace imbriqué depuis un Python
+embarqué compilé par MSVC, et vérifie qu'une référence rendue est une vue
+(`vue.__address__ == g_moteur.__address__`) ; `tests/test_pybind.py` couvre
+l'émission, les refus, les filtres et le stub sans compiler.
 
 #### B2. Vues Python sur `std::vector`, `std::string`, pointeur + taille · P1 · M
 

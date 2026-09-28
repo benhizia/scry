@@ -100,9 +100,26 @@ def cmd_dump(args, cfg):
                   % (v.qualified_name, v.field.type_name, v.field.kind, v.field.size,
                      "  const" if v.is_const else ""))
         print()
+
+    if introspector.functions:
+        print("=== fonctions")
+        for fn in introspector.functions:
+            notes = [n for n, on in (("inline", fn.is_inline), ("static", fn.is_static),
+                                     ("virtuelle", fn.is_virtual),
+                                     ("variadique", fn.is_variadic)) if on]
+            if not fn.is_inline:
+                # Sans definition dans le header, le symbole est dans la
+                # bibliotheque du tiers : les bindings ne la lient pas d'office.
+                notes.append("declaree seulement")
+            print("  %-60s %s" % (fn.signature, ", ".join(notes)))
+            if fn.doc:
+                print("      // %s" % fn.doc)
+        print()
+
     ecartes = len(introspector.report.filtered)
-    print("%d structure(s), %d variable(s) globale(s) depuis %d header(s)%s."
-          % (len(structs), len(introspector.variables), len(introspector.report.parsed),
+    print("%d structure(s), %d variable(s) globale(s), %d fonction(s) depuis %d header(s)%s."
+          % (len(structs), len(introspector.variables), len(introspector.functions),
+             len(introspector.report.parsed),
              ", %d type(s) ecarte(s) par le filtre" % ecartes if ecartes else ""))
     _print_report(introspector, args.verbose)
     return 1 if introspector.report.conflicts else 0
@@ -119,7 +136,8 @@ def cmd_gen(args, cfg):
     if args.pybind:
         from scry.codegen import pybind
         for written in pybind.generate(structs, cfg, header=args.header,
-                                       variables=introspector.variables):
+                                       variables=introspector.variables,
+                                       functions=introspector.functions):
             if not written.endswith(cfg.abi_header):
                 print("Ecrit : %s" % written)
     _print_report(introspector, args.verbose)

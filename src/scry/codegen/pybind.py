@@ -151,6 +151,27 @@ class BoundEnum(object):
         self.namespace = ""
 
 
+class BoundFunction(object):
+    """Fonction libre ou methode, telle qu'elle sera exposee.
+
+    'line' est soit l'appel C++ genere, soit un commentaire disant pourquoi
+    la fonction n'a pas ete liee : le header genere reste la reponse a la
+    question « pourquoi ne puis-je pas appeler ceci depuis Python ? ».
+    """
+
+    def __init__(self, fn: model.Function, explicit: bool = False):
+        self.fn = fn
+        self.py_name = py_identifier(fn.name)
+        self.explicit = explicit     # nomme sans joker dans [pybind] functions
+        self.line = ""
+        self.stub = ""               # ligne 'def ...' du stub, vide si non liee
+        self.reason = ""             # motif du rejet, vide si liee
+
+    @property
+    def bound(self) -> bool:
+        return not self.reason
+
+
 class BoundGlobal(object):
     """Variable globale exposee comme propriete d'un module Python."""
 
@@ -167,7 +188,8 @@ class Binder(object):
     """Parcourt le modele et prepare tout ce que le template assemble."""
 
     def __init__(self, structs: Sequence[model.Struct],
-                 variables: Sequence[model.Variable] = ()):
+                 variables: Sequence[model.Variable] = (),
+                 functions: Sequence[BoundFunction] = ()):
         self.types = []               # type: List[BoundType]
         self.by_key = {}              # type: Dict[str, BoundType]
         self.enums = []               # type: List[BoundEnum]
@@ -175,10 +197,13 @@ class Binder(object):
         self.views = []               # type: List[Tuple[BoundType, str]]
         self._view_keys = set()
         self.globals = [BoundGlobal(v) for v in variables]   # type: List[BoundGlobal]
+        self.functions = list(functions)   # type: List[BoundFunction]
         for s in structs:
             self._type(s.name, s.name, s.kind, s.name, s.fields, None, None, s)
         for g in self.globals:
             self._discover_global(g)
+        for bf in self.functions:
+            self._discover_function(bf)
         self._finalize()
 
     def _discover_global(self, g: BoundGlobal):
@@ -206,6 +231,18 @@ class Binder(object):
                                "std::remove_all_extents_t<decltype(%s)>" % g.expr,
                                elem.kind, "", elem.children, None, None)
             self._view(t)
+
+    def _discover_function(self, bf: BoundFunction):
+        """Une enum vue seulement dans une signature doit etre enregistree.
+
+        Les classes, non : on n'aurait pas leurs membres. Si un argument est
+        d'un type absent du modele, la fonction sera ecartee plus bas, avec sa
+        raison.
+        """
+        for ref in [bf.fn.returns] + [a.type for a in bf.fn.args]:
+            base = ref.base
+            if base is not None and base.kind == model.ENUM and base.enum_type:
+                self._enum(base)
 
     # -- decouverte ---------------------------------------------------------
     def _type(self, key, cpp, kind, qualified, fields, owner, member, root=None):
@@ -344,17 +381,30 @@ class Binder(object):
             views.append((t, name))
         self.views = views
 
+        self._bind_functions()
         for t in self.types:
             self._bind_fields(t, t.fields, flattened=False)
+            # Les methodes viennent apres les donnees et avant les services :
+            # __scry_fields__ ne parle que des membres.
+            t.lines.extend(self._method_lines.get(t.key, []))
             self._services(t)
         for g in self.globals:
             g.line, g.hint = self._global(g)
             g.module = ns_py.get(g.namespace, "")
 
-    def _namespaces(self) -> List[Dict[str, str]]:
+    def _namespaces(self, extra: Sequence[str] = ()) -> List[Dict[str, str]]:
+        """Sous-modules a creer, parents compris.
+
+        'extra' ajoute des namespaces dont rien d'autre qu'une fonction libre
+        ne depend. Le C++ ne les demande pas : register_types declare une
+        variable locale par sous-module, et une fonction libre, elle, retrouve
+        le sien par son chemin. En declarer une inutilisee ferait echouer la
+        compilation du code genere, qui passe en -Werror. Le stub, lui, a
+        besoin de la classe imbriquee correspondante.
+        """
         paths = set()
-        for item in list(self.types) + list(self.enums) + list(self.globals):
-            ns = item.namespace
+        for ns in [item.namespace for item in
+                   list(self.types) + list(self.enums) + list(self.globals)] + list(extra):
             while ns:
                 paths.add(ns)
                 ns = split_last(ns)[0]
@@ -432,6 +482,195 @@ class Binder(object):
             key = q or "global:" + g.var.qualified_name
             return line("object"), self._hint_for_type(key)
         return "// %s : type non gere (%s)" % (g.var.qualified_name, f.type_name), ""
+
+    # -- fonctions -----------------------------------------------------------
+    def _bind_functions(self):
+        """Prepare l'appel C++ de chaque fonction, et le repartit.
+
+        Une methode s'ecrit sur l'objet py::class_ de sa classe, qui n'existe
+        que dans register_types : sa ligne rejoint donc celles des membres.
+        Tout le reste, fonctions libres et refus, part dans
+        register_functions.
+        """
+        counts = {}
+        for bf in self.functions:
+            key = (bf.fn.owner, bf.fn.name)
+            counts[key] = counts.get(key, 0) + 1
+        self._method_lines = {}       # type: Dict[str, List[str]]
+        for bf in self.functions:
+            owner = self.by_key.get(bf.fn.owner) if bf.fn.owner else None
+            self._bind_function(bf, owner, counts[(bf.fn.owner, bf.fn.name)] > 1)
+            if owner is not None:
+                self._method_lines.setdefault(owner.key, []).append(bf.line)
+
+    def stub_namespaces(self) -> List[Dict[str, str]]:
+        """Namespaces du stub : ceux du C++, plus ceux qui n'ont qu'une fonction."""
+        return self._namespaces([bf.fn.namespace for bf in self.functions
+                                 if bf.bound and not bf.fn.owner])
+
+    def free_functions(self) -> List[BoundFunction]:
+        """Ce qui s'ecrit dans register_functions : les fonctions libres, et
+        les refus dont la classe n'est pas enregistree."""
+        return [bf for bf in self.functions
+                if not (bf.fn.owner and bf.fn.owner in self.by_key)]
+
+    def _bind_function(self, bf: BoundFunction, owner, overloaded: bool):
+        fn = bf.fn
+        reason = self._unbindable(bf, owner)
+        if reason:
+            bf.reason = reason
+            bf.line = "// %s : %s" % (fn.signature, reason)
+            return
+
+        cls = owner.alias if owner is not None else ""
+        target = "&%s::%s" % (cls, fn.name) if cls else "&::%s" % fn.qualified_name
+        if overloaded:
+            # Deux surcharges portent le meme nom : seule l'ecriture exacte de
+            # la signature designe celle que l'on veut.
+            args = ", ".join(a.type.cpp for a in fn.args)
+            holder = "%s::*" % cls if (cls and not fn.is_static) else "*"
+            target = "static_cast<%s (%s)(%s)%s>(%s)" % (
+                fn.returns.cpp, holder, args, " const" if fn.is_const else "", target)
+
+        extras = []
+        if fn.doc:
+            extras.append('"%s"' % _cstr(fn.doc))
+        extras.extend(self._arg_specs(fn))
+        policy = self._return_policy(fn)
+        if policy:
+            extras.append(policy)
+
+        # Les sous-modules de register_types sont des variables locales : une
+        # fonction libre retrouve le sien par son chemin, sans les partager.
+        scope = (owner.var if owner is not None
+                 else 'detail::submodule(m, "%s")' % fn.namespace)
+        method = "def_static" if (owner is not None and fn.is_static) else "def"
+        bf.line = '%s.%s("%s", %s%s);' % (scope, method, bf.py_name, target,
+                                          "".join(", " + e for e in extras))
+        bf.stub = self._stub_def(bf, owner, overloaded)
+
+    def _unbindable(self, bf: BoundFunction, owner) -> str:
+        """Raison de ne pas lier, ou "" si la fonction est liable."""
+        fn = bf.fn
+        if fn.is_variadic:
+            return "variadique, sans equivalent en Python"
+        if fn.access != "public":
+            return "methode %s, innommable hors de la classe" % fn.access
+        if fn.is_virtual:
+            # Appeler une virtuelle depuis Python marcherait, mais la redefinir
+            # non : il y faudrait une classe relais. Plutot que de promettre a
+            # moitie, on l'ecarte, et on le dit.
+            return "methode virtuelle : une redefinition depuis Python demanderait un relais"
+        if not fn.is_inline and not bf.explicit:
+            return ("declaree sans definition dans le header : le module ne se lierait pas"
+                    " (nommer '%s' dans [pybind] functions pour forcer)" % fn.qualified_name)
+        if fn.owner and owner is None:
+            return "classe %s absente du module" % fn.owner
+        for what, ref in [("retour", fn.returns)] + [("argument " + a.name, a.type)
+                                                     for a in fn.args]:
+            ok, detail = self._ref_hint(ref, is_return=(what == "retour"))
+            if not ok:
+                return "%s : %s" % (what, detail)
+        return ""
+
+    def _ref_hint(self, ref: model.TypeRef, is_return: bool) -> Tuple[bool, str]:
+        """(liable, indication de type Python) ou (False, raison)."""
+        if ref.base is None:
+            if ref.is_pointer:
+                return False, "void* non gere"
+            return (True, "None") if is_return else (False, "void en argument")
+        if ref.is_cstring:
+            return True, "str"
+        base = ref.base
+        if base.kind == model.FUNDAMENTAL:
+            if ref.is_pointer:
+                return False, "pointeur vers %s non gere" % base.type_name
+            return True, _scalar_hint(base.type_name, base.size)
+        if base.kind == model.ENUM:
+            e = self.enum_by_key.get(base.enum_type)
+            if e is None:
+                return False, "enum %s non enregistree" % (base.enum_type or base.type_name)
+            return True, e.py_path
+        if base.kind in model.AGGREGATES:
+            q = base.qualified_type
+            if _is_std_string(q):
+                return True, "str"
+            if _is_std(q):
+                return False, "%s non liee (STL, pas un POD)" % q.split("<")[0]
+            t = self.by_key.get(q)
+            if t is None:
+                return False, "type %s absent du module" % (q or base.type_name)
+            return True, t.py_path
+        return False, "type non gere (%s)" % ref.cpp
+
+    # Defaut reproductible tel quel : litteral, ou nom qualifie d'enumerateur.
+    # Tout le reste ('(Mode)0', '{}', un appel) risquerait de ne pas compiler,
+    # et une erreur de compilation du module coute plus cher qu'un argument
+    # devenu obligatoire.
+    _SAFE_DEFAULT = re.compile(
+        r"""^(?: -?0[xX][0-9a-fA-F]+[uUlL]*
+               | -?\d+[uUlL]*
+               | -?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?[fFlL]?
+               | true | false | nullptr | NULL
+               | "(?:[^"\\]|\\.)*"
+               | '(?:[^'\\]|\\.)+'
+               | (?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*
+             )$""", re.VERBOSE)
+
+    def _arg_specs(self, fn: model.Function) -> List[str]:
+        """py::arg par argument : les appels nommes marchent depuis Python.
+
+        Les defauts s'arretent au premier que l'on ne sait pas reecrire :
+        pybind11 exige, comme le C++, que les defauts soient en queue.
+        """
+        out = []
+        defaults = True
+        for a in fn.args:
+            spec = 'py::arg("%s")' % py_identifier(a.name)
+            if defaults and a.default and self._SAFE_DEFAULT.match(a.default.strip()):
+                spec += " = %s" % a.default.strip()
+            elif a.default:
+                defaults = False
+            out.append(spec)
+        return out
+
+    @staticmethod
+    def _return_policy(fn: model.Function) -> str:
+        """Une reference vers une structure doit rester une VUE.
+
+        Sans politique explicite, pybind11 copierait l'objet rendu : ecrire
+        dans le resultat de courant() n'ecrirait plus dans le simulateur.
+        reference_internal garde en plus l'objet appelant en vie tant que la
+        vue existe, ce qu'une methode statique ne permet pas.
+        """
+        ref = fn.returns
+        if not (ref.is_reference or ref.is_pointer) or ref.base is None:
+            return ""
+        if ref.base.kind not in model.AGGREGATES or _is_std(ref.base.qualified_type):
+            return ""
+        if fn.is_method and not fn.is_static:
+            return "py::return_value_policy::reference_internal"
+        return "py::return_value_policy::reference"
+
+    def _stub_def(self, bf: BoundFunction, owner, overloaded: bool) -> str:
+        fn = bf.fn
+        params = []
+        if owner is not None and not fn.is_static:
+            params.append("self")
+        for a in fn.args:
+            _, hint = self._ref_hint(a.type, is_return=False)
+            params.append('%s: "%s"%s' % (py_identifier(a.name), hint,
+                                          " = ..." if a.default else ""))
+        _, ret = self._ref_hint(fn.returns, is_return=True)
+        lines = []
+        if overloaded:
+            # Sans @overload, le second 'def' du meme nom masquerait le premier
+            # et l'editeur ne proposerait qu'une signature sur deux.
+            lines.append("@overload")
+        if owner is not None and fn.is_static:
+            lines.append("@staticmethod")
+        lines.append('def %s(%s) -> "%s": ...' % (bf.py_name, ", ".join(params), ret))
+        return "\n".join(lines)
 
     def _hint_for_type(self, key: str) -> str:
         t = self.by_key.get(key)
@@ -591,7 +830,7 @@ Les classes sont des VUES sur la memoire C++ : ecrire un attribut ecrit dans
 le programme. Les namespaces C++ sont des sous-modules, representes ici par
 des classes.
 """
-from typing import Any, Dict, Generic, Iterator, Optional, TypeVar
+from typing import Any, Dict, Generic, Iterator, Optional, TypeVar, overload
 
 import numpy
 
@@ -613,7 +852,7 @@ def render_stub(binder: Binder, globals_: Sequence[Tuple[str, str]] = ()) -> str
     def add(scope_key, entry):
         children.setdefault(scope_key, []).append(entry)
 
-    for ns in binder.namespaces:
+    for ns in binder.stub_namespaces():
         add(("ns", split_last(ns["path"])[0]), ("ns", ns))
     for t in binder.types:
         key = ("type", t.scope_type.key) if t.scope_type is not None else ("ns", t.namespace)
@@ -625,6 +864,12 @@ def render_stub(binder: Binder, globals_: Sequence[Tuple[str, str]] = ()) -> str
     for g in binder.globals:
         if g.hint:
             add(("ns", g.namespace), ("global", g))
+    for bf in binder.functions:
+        if not bf.stub:
+            continue
+        owner = binder.by_key.get(bf.fn.owner) if bf.fn.owner else None
+        key = ("type", owner.key) if owner is not None else ("ns", bf.fn.namespace)
+        add(key, ("function", bf))
 
     out = [_STUB_HEADER]
 
@@ -635,6 +880,9 @@ def render_stub(binder: Binder, globals_: Sequence[Tuple[str, str]] = ()) -> str
             if kind == "global":
                 note = "  # const" if item.var.is_const else ""
                 out.append('%s%s: "%s"%s' % (pad, item.py_name, item.hint, note))
+            elif kind == "function":
+                for text in item.stub.split("\n"):
+                    out.append(pad + text)
             elif kind == "ns":
                 out.append("%sclass %s:  # namespace %s" % (pad, item["name"], item["path"]))
                 before = len(out)
@@ -749,6 +997,30 @@ def select_variables(variables: Sequence[model.Variable], cfg: Config
             and not any(fnmatch.fnmatchcase(v.qualified_name, p) for p in hide)]
 
 
+def select_functions(functions: Sequence[model.Function], cfg: Config
+                     ) -> List[BoundFunction]:
+    """[pybind] functions et hide_functions : motifs glob sur le nom qualifie.
+
+    functions vide ou absent : toutes. hide_functions l'emporte, comme hide
+    l'emporte sur expose. Un motif SANS joker vaut de plus autorisation
+    explicite : c'est la seule facon d'exposer une fonction seulement declaree
+    dans le header, dont le symbole vit dans la bibliotheque du tiers.
+    """
+    import fnmatch
+    keep = cfg.get_list("pybind", "functions")
+    hide = cfg.get_list("pybind", "hide_functions")
+    named = {p.strip() for p in keep if not any(c in p for c in "*?[")}
+    out = []
+    for fn in functions:
+        name = fn.qualified_name
+        if keep and not any(fnmatch.fnmatchcase(name, p) for p in keep):
+            continue
+        if any(fnmatch.fnmatchcase(name, p) for p in hide):
+            continue
+        out.append(BoundFunction(fn, explicit=name in named))
+    return out
+
+
 def render_module(cfg: Config) -> str:
     return """// =============================================================================
 //  Genere par Scry (scry gen --pybind). Ne pas editer a la main.
@@ -782,13 +1054,16 @@ def stub_globals(cfg: Config) -> List[Tuple[str, str]]:
 
 
 def build_context(structs: Sequence[model.Struct], cfg: Config, header=None,
-                  variables: Sequence[model.Variable] = ()) -> Dict:
+                  variables: Sequence[model.Variable] = (),
+                  functions: Sequence[model.Function] = ()) -> Dict:
     selected = select_variables(variables, cfg)
-    binder = Binder(structs, selected)
-    # Headers des structures, plus ceux qui ne declarent que des variables.
+    bound_functions = select_functions(functions, cfg)
+    binder = Binder(structs, selected, bound_functions)
+    # Headers des structures, plus ceux qui ne declarent que des variables
+    # ou des fonctions.
     sources = generator.source_headers(list(structs), cfg, header)
-    for v in selected:
-        name = os.path.basename(v.header) if v.header else ""
+    for origin in [v.header for v in selected] + [bf.fn.header for bf in bound_functions]:
+        name = os.path.basename(origin) if origin else ""
         if name and name not in sources:
             sources.append(name)
     return {
@@ -810,18 +1085,21 @@ def build_context(structs: Sequence[model.Struct], cfg: Config, header=None,
         "views": [{"alias": t.alias, "name": name} for t, name in binder.views],
         "hashes": binder.root_hashes(),
         "globals": binder.globals,
+        "functions": binder.free_functions(),
     }
 
 
 def render(structs: Sequence[model.Struct], cfg: Optional[Config] = None, header=None,
-           variables: Sequence[model.Variable] = ()) -> str:
+           variables: Sequence[model.Variable] = (),
+           functions: Sequence[model.Function] = ()) -> str:
     cfg = cfg or load_config()
     return generator.environment().get_template("pybind.h.j2").render(
-        **build_context(structs, cfg, header, variables))
+        **build_context(structs, cfg, header, variables, functions))
 
 
 def generate(structs: Sequence[model.Struct], cfg: Optional[Config] = None,
-             header=None, variables: Sequence[model.Variable] = ()) -> List[str]:
+             header=None, variables: Sequence[model.Variable] = (),
+             functions: Sequence[model.Function] = ()) -> List[str]:
     """Ecrit le header de bindings, le module embarque, le stub .pyi et le
     fragment CMake."""
     cfg = cfg or load_config()
@@ -829,14 +1107,15 @@ def generate(structs: Sequence[model.Struct], cfg: Optional[Config] = None,
     written = []
     if cfg.emit_abi_checks:
         written.append(generator.generate_abi(structs, cfg, header=header))
-    context = build_context(structs, cfg, header, variables)
+    context = build_context(structs, cfg, header, variables, functions)
     text = generator.environment().get_template("pybind.h.j2").render(**context)
     written.append(generator._write(cfg, header_name(cfg), text))
     written.append(generator._write(cfg, module_source_name(cfg), render_module(cfg)))
     written.append(generator._write(cfg, stub_name(cfg),
                                     render_stub(context["binder"], stub_globals(cfg))))
     dirs = []
-    for origin in [s.header for s in structs] + [v.header for v in variables]:
+    for origin in ([s.header for s in structs] + [v.header for v in variables]
+                   + [f.header for f in functions]):
         d = os.path.dirname(os.path.abspath(origin)) if origin else ""
         if d and d not in dirs:
             dirs.append(d)

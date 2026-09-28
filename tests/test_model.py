@@ -218,3 +218,62 @@ def test_printf_for_float_promeut_en_double():
     """%f attend un double : passer un float sans cast est un comportement indefini."""
     fmt, expr = model.printf_for("float")
     assert "static_cast<double>" in expr
+
+
+# -- fonctions ---------------------------------------------------------------
+def _ref(cpp, kind=model.FUNDAMENTAL, type_name="int", **kw):
+    base = None if kind is None else Field(name="", type_name=type_name, kind=kind,
+                                           size=4, **kw)
+    return model.TypeRef(cpp=cpp, base=base, is_reference=cpp.endswith("&"),
+                         is_pointer=cpp.endswith("*"))
+
+
+def _fn(qualified, owner="", **kw):
+    kw.setdefault("returns", model.TypeRef(cpp="void"))
+    return model.Function(name=qualified.rpartition("::")[2], qualified_name=qualified,
+                          owner=owner, **kw)
+
+
+def test_type_ref_distingue_void_une_chaine_et_un_pointeur():
+    assert model.TypeRef(cpp="void").is_void
+    assert _ref("char const *", type_name="char").is_cstring
+    # Un pointeur vers autre chose qu'un caractere n'est pas une chaine.
+    assert not _ref("int *").is_cstring
+    assert not _ref("int").is_cstring
+
+
+def test_signature_porte_le_const_et_l_ellipse():
+    fn = _fn("ns::S::marge", owner="ns::S", returns=_ref("double", type_name="double"),
+             args=[model.Argument(name="p", type=_ref("double", type_name="double"))],
+             is_const=True)
+    assert fn.signature == "double ns::S::marge(double) const"
+    assert fn.is_method and fn.namespace == "ns"
+    trace = _fn("ns::trace", args=[model.Argument(name="f", type=_ref("int"))],
+                is_variadic=True)
+    assert trace.signature == "void ns::trace(int, ...)"
+    # Fonction libre : le namespace vient de son propre nom qualifie.
+    assert not trace.is_method and trace.namespace == "ns"
+    assert _fn("racine").namespace == ""
+
+
+def test_select_functions_memes_motifs_que_les_types():
+    functions = [_fn("ns::reset"), _fn("ns::sub::aide"), _fn("autre::f")]
+    gardes, ecartes = model.select_functions(functions, None, include=["ns::*"])
+    assert [f.qualified_name for f in gardes] == ["ns::reset", "ns::sub::aide"]
+    assert ecartes == ["void autre::f()"]
+    # exclude l'emporte, comme partout ailleurs dans Scry.
+    gardes, _ = model.select_functions(functions, None, include=["ns::*"],
+                                       exclude=["*::sub::*"])
+    assert [f.qualified_name for f in gardes] == ["ns::reset"]
+
+
+def test_select_functions_ecarte_les_methodes_d_un_type_filtre():
+    """Garder la methode d'une classe absente du modele promettrait un appel
+    sur un type que rien n'expose."""
+    functions = [_fn("ns::S::marge", owner="ns::S"), _fn("ns::T::poser", owner="ns::T"),
+                 _fn("ns::reset")]
+    gardes, ecartes = model.select_functions(functions, ["ns::S"])
+    assert [f.qualified_name for f in gardes] == ["ns::S::marge", "ns::reset"]
+    assert ecartes == ["void ns::T::poser()"]
+    # type_names a None : on ne verifie que les motifs.
+    assert len(model.select_functions(functions, None)[0]) == 3

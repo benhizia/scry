@@ -124,6 +124,9 @@ class ParseReport(object):
         self.duplicates = []    # type: List[str]
         self.conflicts = []     # type: List[str]
         self.filtered = []      # type: List[str]   types ecartes par le filtre
+        # Fonctions vues mais non retenues : (signature, raison). Sans cette
+        # trace, une fonction absente du module resterait inexplicable.
+        self.skipped_functions = []   # type: List[Tuple[str, str]]
 
     @property
     def ok(self) -> bool:
@@ -145,6 +148,8 @@ class ParseReport(object):
                 if len(self.filtered) > 8:
                     noms += ", ..."
                 out.append("[filtre] %d type(s) ecarte(s) : %s" % (len(self.filtered), noms))
+            for signature, raison in self.skipped_functions:
+                out.append("[fonction] %s : %s" % (signature, raison))
         return out
 
 
@@ -160,6 +165,8 @@ class Introspector(object):
         self._comments = SourceComments()
         self.variables = []  # type: List[model.Variable]
         self._variables_of = {}  # type: Dict[str, List[model.Variable]]
+        self.functions = []  # type: List[model.Function]
+        self._functions_of = {}  # type: Dict[str, List[model.Function]]
 
     # -- configuration ------------------------------------------------------
     def xml_config(self):
@@ -279,11 +286,14 @@ class Introspector(object):
     def parse(self, headers=None) -> List[model.Struct]:
         """Parse un ou plusieurs headers et retourne le modele fusionne.
 
-        Les variables globales des memes headers sont dans self.variables.
+        Les variables globales des memes headers sont dans self.variables, et
+        leurs fonctions dans self.functions.
         """
         self.report = ParseReport()
         self.variables = []  # type: List[model.Variable]
+        self.functions = []  # type: List[model.Function]
         seen_variables = set()
+        seen_functions = set()
         files = self.resolve_headers(headers)
 
         cache = self._open_cache()
@@ -307,6 +317,12 @@ class Introspector(object):
                 if var.qualified_name not in seen_variables:
                     seen_variables.add(var.qualified_name)
                     self.variables.append(var)
+            # Deux surcharges portent le meme nom : c'est la signature qui
+            # identifie une fonction, pas son nom qualifie.
+            for fn in self._functions_of.pop(full, []):
+                if fn.signature not in seen_functions:
+                    seen_functions.add(fn.signature)
+                    self.functions.append(fn)
 
         if cache is not None:
             cache.flush()
@@ -319,6 +335,11 @@ class Introspector(object):
         structs, ecartes = model.select_types(
             [merged[name] for name in order], self.include_types, self.exclude_types)
         self.report.filtered = ecartes
+        self.functions, ecartees = model.select_functions(
+            self.functions, [s.name for s in structs],
+            self.include_types, self.exclude_types)
+        self.report.skipped_functions += [(sig, "ecartee par le filtre de types")
+                                          for sig in ecartees]
         return structs
 
     @staticmethod
@@ -335,7 +356,14 @@ class Introspector(object):
         global_ns = declarations.get_global_namespace(decls)
         self._variables_of[full] = [self.build_variable(v)
                                     for v in self._root_variables(global_ns, full)]
-        return [self.build_struct(cls) for cls in self._root_classes(global_ns, full)]
+        classes = self._root_classes(global_ns, full)
+        functions = [self.build_function(f)
+                     for f in self._root_functions(global_ns, full)]
+        for cls in classes:
+            owner = _qualified_name(cls)
+            functions += [self.build_function(m, owner=owner) for m in self._methods(cls)]
+        self._functions_of[full] = functions
+        return [self.build_struct(cls) for cls in classes]
 
     # -- variables globales --------------------------------------------------
     def _root_variables(self, global_ns, header_full: str):
@@ -389,6 +417,133 @@ class Introspector(object):
             if f.access_path.startswith(old):
                 f.access_path = path + f.access_path[len(old):]
             stack.extend(f.children)
+
+    # -- fonctions ------------------------------------------------------------
+    def _root_functions(self, global_ns, header_full: str):
+        """Fonctions libres declarees dans le header (ou root_globs).
+
+        Ecartes ici ce qui n'est pas une fonction nommee ordinaire : operateurs,
+        qui demanderaient une correspondance vers les methodes speciales de
+        Python, et declarations fabriquees par le compilateur. Les gabarits non
+        instancies ne sont de toute facon pas dans le XML. Ce qui est present
+        mais non liable, une fonction variadique par exemple, reste dans le
+        modele : c'est au generateur de dire pourquoi il l'ecarte, et a
+        'scry dump' de montrer l'API telle qu'elle est.
+        """
+        target = _norm(header_full)
+        patterns = self._root_patterns()
+        out = []
+        for fn in global_ns.free_functions(allow_empty=True, recursive=True):
+            if not isinstance(fn.parent, declarations.namespace_t) or not fn.name:
+                continue
+            if self._is_operator(fn) or fn.is_artificial:
+                continue
+            loc = getattr(fn, "location", None)
+            if loc is None:
+                continue
+            where = _norm(loc.file_name)
+            if where != target and not self._matches(where, patterns):
+                continue
+            out.append(fn)
+        out.sort(key=lambda f: (_qualified_name(f), f.decl_string))
+        return out
+
+    def _methods(self, cls):
+        """Methodes d'une classe racine, hors operateurs et hors fabriquees.
+
+        Constructeurs et destructeurs ne sont pas des member_functions et ne
+        sont donc pas ici : py::init<>() suffit aux bindings. Les methodes non
+        publiques suivent include_non_public, comme les membres : on ne peut de
+        toute facon pas les nommer hors de la classe.
+        """
+        try:
+            members = cls.member_functions(allow_empty=True, recursive=False)
+        except Exception:
+            return []
+        out = []
+        for m in members:
+            if not m.name or self._is_operator(m) or m.is_artificial:
+                continue
+            access = str(getattr(m, "access_type", None) or "public")
+            if access != "public" and not self.cfg.include_non_public:
+                continue
+            out.append(m)
+        out.sort(key=lambda f: (f.name, f.decl_string))
+        return out
+
+    @staticmethod
+    def _is_operator(fn) -> bool:
+        return isinstance(fn, declarations.operator_t) or fn.name.startswith("operator")
+
+    def build_function(self, fn, owner: str = "") -> model.Function:
+        args = []
+        for i, arg in enumerate(fn.arguments):
+            if arg.decl_type.decl_string == "...":     # l'ellipse n'est pas un argument
+                continue
+            args.append(model.Argument(
+                name=arg.name or "arg%d" % i,
+                type=self._type_ref(arg.decl_type),
+                default=str(arg.default_value or ""),
+            ))
+        virtuality = str(getattr(fn, "virtuality", None) or "not virtual")
+        return model.Function(
+            name=fn.name,
+            qualified_name=_qualified_name(fn),
+            returns=self._type_ref(fn.return_type),
+            args=args,
+            owner=owner,
+            is_inline=bool(getattr(fn, "has_inline", False)),
+            is_static=bool(getattr(fn, "has_static", False)),
+            is_const=bool(getattr(fn, "has_const", False)),
+            is_virtual=virtuality != "not virtual",
+            is_variadic=bool(getattr(fn, "has_ellipsis", False)),
+            access=str(getattr(fn, "access_type", None) or "public"),
+            doc=self._doc(fn),
+            header=getattr(getattr(fn, "location", None), "file_name", ""),
+        )
+
+    def _type_ref(self, decl_type) -> model.TypeRef:
+        """TypeRef d'un type de signature, sans descendre dans ses membres.
+
+        Un argument n'a ni offset ni enfants : seules sa nature et son nom
+        qualifie comptent, pour choisir la liaison et l'indication de type.
+        On decrit donc le type NU, apres const, reference, pointeur et
+        tableau, et on garde a part l'ecriture exacte du compilateur, seule
+        capable de lever une surcharge.
+        """
+        ref = model.TypeRef(cpp=decl_type.decl_string)
+        t = declarations.remove_alias(decl_type)
+        if declarations.is_const(t) or declarations.is_volatile(t):
+            ref.is_const = declarations.is_const(t)
+            t = declarations.remove_cv(t)
+        if declarations.is_reference(t):
+            ref.is_reference = True
+            t = declarations.remove_cv(declarations.remove_alias(
+                declarations.remove_reference(t)))
+        while declarations.is_array(t):
+            # Un tableau en argument decroit en pointeur : c'est ainsi qu'il
+            # se comporte a l'appel, et c'est ce qu'il faut dire au stub.
+            ref.is_array = True
+            ref.is_pointer = True
+            t = declarations.remove_cv(declarations.remove_alias(
+                declarations.array_item_type(t)))
+        while declarations.is_pointer(t):
+            ref.is_pointer = True
+            t = declarations.remove_cv(declarations.remove_alias(
+                declarations.remove_pointer(t)))
+        if declarations.is_const(t):
+            ref.is_const = True
+            t = declarations.remove_cv(t)
+        if declarations.is_void(t):
+            return ref
+        base = model.Field(name="", type_name=t.decl_string, kind=model.UNKNOWN)
+        # max_depth - 1 : _describe_type renseigne nature, taille, nom qualifie
+        # et valeurs d'enum, puis s'arrete au bord de la classe. Le drapeau
+        # 'truncated' qui en resulte ne dirait rien d'utile ici.
+        self._describe_type(base, t, depth=max(self.cfg.max_depth - 1, 0), seen=())
+        base.truncated = ""
+        ref.base = base
+        return ref
 
     def _open_cache(self):
         """Cache pygccxml, un fichier par configuration de compilateur.

@@ -101,7 +101,8 @@ def built(tmp_path_factory):
     cfg = load_config(ini)
     introspector = Introspector(cfg)
     structs = introspector.parse([str(CASES), str(DATA / "test_structs_complexe.h")])
-    pybind.generate(structs, cfg, variables=introspector.variables)
+    pybind.generate(structs, cfg, variables=introspector.variables,
+                    functions=introspector.functions)
 
     gen = out / "gen"
     py_inc, py_libdirs, py_libs, py_extra = _python_build_flags()
@@ -116,7 +117,7 @@ def built(tmp_path_factory):
         includes=[gen, CASES.parent, DATA],
         external=[pybind11.get_include()] + py_inc,
         lib_dirs=py_libdirs, libs=py_libs, extra=quiet + py_extra))
-    return exe, index_by_name(structs), introspector.variables, gen
+    return exe, index_by_name(structs), introspector.variables, gen, introspector.functions
 
 
 def run(built, tmp_path, script):
@@ -287,6 +288,100 @@ def test_empreintes_et_stub(built, tmp_path):
     assert 'g_sample: "cases.Sample"' in stub
     assert 'g_version: "int"  # const' in stub
     assert 'g_current: "Optional[cases.Sample]"' in stub
+
+
+def test_fonctions_collectees_avec_leur_nature(built):
+    par_signature = {fn.signature: fn for fn in built[4]}
+    assert "void cases::remettre_a_zero()" in par_signature
+    assert "int cases::util::doubler(int)" in par_signature
+    # Deux surcharges : c'est la signature qui les distingue, pas le nom.
+    assert sum(1 for s in par_signature if "cases::additionner(" in s) == 2
+    assert par_signature["double cases::compute_trim(::cases::Sample const &)"].is_inline is False
+    assert par_signature["int cases::journaliser(char const *, ...)"].is_variadic
+    methode = par_signature["double cases::Moteur::marge(double) const"]
+    assert (methode.owner, methode.is_const, methode.is_method) == ("cases::Moteur", True, True)
+    assert par_signature["int cases::Moteur::version()"].is_static
+    assert par_signature["int cases::Moteur::virtuelle()"].is_virtual
+    assert par_signature["int cases::Moteur::cachee()"].access == "private"
+
+
+def test_methodes_appelees_depuis_python(built, tmp_path):
+    out = run(built, tmp_path, """
+        import sut
+        c = sut.cases
+        m = c.g_moteur
+        m.pousser(1.5)                       # defaut repetitions=1
+        m.pousser(1.0, 3)                    # argument nomme possible aussi
+        m.pousser(delta=0.5, repetitions=2)
+        assert m.marge(10.0) == 10.0 - m.regime
+        m.choisir(c.Speed.Fast)
+        assert m.choisie() == c.Speed.Fast    # enum en retour
+        assert c.Moteur.version() == 7        # methode statique
+        assert m.calibrer(3) == 3 and m.calibrer(2.9) == 2       # surcharges
+        m.echantillon().from_ = 12            # vue sur un membre, pas une copie
+        assert m.echantillon().from_ == 12
+        assert "Remet le moteur a l'arret." in c.Moteur.couper.__doc__
+        for stmt, exc in [("m.virtuelle()", AttributeError),
+                          ("m.declaree()", AttributeError),
+                          ("m.cachee()", AttributeError)]:
+            try:
+                exec(stmt)
+                raise SystemExit("aucune erreur : " + stmt)
+            except exc:
+                pass
+    """)
+    assert out["MOTEUR"] == "5.5 10"     # 1.5 + 3*1.0 + 2*0.5 ; Speed::Fast == 10
+
+
+def test_fonctions_libres_appelees_depuis_python(built, tmp_path):
+    out = run(built, tmp_path, """
+        import sut
+        c = sut.cases
+        c.g_sample.from_ = 5
+        c.remettre_a_zero()
+        assert c.g_sample.from_ == 0
+        assert c.etiquette() == "cases"                  # const char* -> str
+        assert c.additionner(2, 3) == 5                  # surcharges libres
+        assert c.additionner(0.5, 0.25) == 0.75
+        assert c.util.doubler(21) == 42                  # namespace imbrique
+        # Structure en argument, par reference : la fonction ecrit dedans.
+        assert c.appliquer(c.g_moteur, c.Speed.Slow) == 2.5
+        assert c.g_moteur.allure == c.Speed.Slow
+        # Reference en retour : une VUE, pas une copie.
+        vue = c.moteur_courant()
+        vue.regime = 99.0
+        assert c.g_moteur.regime == 99.0
+        assert vue.__address__ == c.g_moteur.__address__
+        for stmt in ["c.compute_trim(c.g_sample)", "c.journaliser('x')"]:
+            try:
+                exec(stmt)
+                raise SystemExit("aucune erreur : " + stmt)
+            except AttributeError:
+                pass
+    """)
+    assert out["MOTEUR"] == "99 3"       # Speed::Slow == 3
+
+
+def test_stub_declare_les_fonctions(built):
+    stub = (built[3] / "sut.pyi").read_text(encoding="utf-8")
+    assert 'def doubler(v: "int") -> "int": ...' in stub
+    assert 'def marge(self, plafond: "float") -> "float": ...' in stub
+    assert 'def pousser(self, delta: "float", repetitions: "int" = ...) -> "None": ...' in stub
+    assert 'def moteur_courant() -> "cases.Moteur": ...' in stub
+    assert 'def choisie(self) -> "cases.Speed": ...' in stub
+    # Deux surcharges : sans @overload, la seconde masquerait la premiere.
+    assert stub.count("@overload") == 4
+    assert "@staticmethod\n        def version() -> \"int\": ..." in stub
+    # Une fonction non liee n'a rien a promettre dans le stub.
+    assert "compute_trim" not in stub
+
+
+def test_le_header_genere_dit_pourquoi_une_fonction_manque(built):
+    header = (built[3] / "scry_pybind.generated.h").read_text(encoding="utf-8")
+    assert "cases::compute_trim" in header and "le module ne se lierait pas" in header
+    assert "cases::journaliser" in header and "variadique" in header
+    assert "cases::Moteur::virtuelle" in header and "methode virtuelle" in header
+    assert "cases::Moteur::cachee" in header and "methode private" in header
 
 
 def test_heritage_prive_et_docstrings(built, tmp_path):
