@@ -87,7 +87,8 @@ ctest --test-dir build/raven
 
 ### Windows
 
-`ravenun_demo.bat` fait tout : venv, CMake avec Visual Studio 2022,
+`raven
+un_demo.bat` fait tout : venv, CMake avec Visual Studio 2022,
 compilation en Release, puis le simulateur et l'enregistreur dans deux
 fenêtres et le visualiseur au premier plan. `--no-view` s'arrête avant l'IHM.
 
@@ -122,6 +123,12 @@ c'est ce que la sentinelle doit attraper.
 - **Visualiseur paresseux** : il n'envoie à `raven` que les champs des lignes
   affichées, environ 20 fois par seconde. Sentinelles et traces sont
   calculées par `raven`, sur toutes les trames.
+- **Publication non bloquante** : `raven` n'attend jamais son visualiseur.
+  Les mises à jour passent par une file de sortie plafonnée ; quand le
+  visualiseur ne suit plus, des lots sont abandonnés et comptés, et il
+  rattrape à la mise à jour suivante. Les réponses aux commandes, elles, ne
+  sont jamais abandonnées : un enregistrement reste arrêtable même si l'IHM
+  est figée. L'enregistrement est un journal, le visualiseur un état.
 - **`.rvn` à enregistrements de taille fixe** : l'en-tête contient le
   descripteur, les champs choisis et le déclencheur. La n-ième trame se trouve
   par un simple calcul, et un fichier coupé reste lisible jusqu'au dernier

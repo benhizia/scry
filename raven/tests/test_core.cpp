@@ -1,11 +1,13 @@
 // Tests du coeur et du moteur, sans simulateur ni reseau : descripteur,
 // anneau en memoire partagee, declencheur, enregistrement et relecture.
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
 #include "engine.h"
+#include "raven/net.h"
 #include "raven/producer.h"
 #include "raven/rvn.h"
 
@@ -154,10 +156,46 @@ static void test_engine_record() {
     std::remove(path.c_str());
 }
 
+// Un visualiseur qui ne lit jamais ne doit pas figer raven. La publication
+// remplit une file plafonnee, abandonne des lots et rend la main tout de
+// suite ; sans cela, le ::send bloquant arretait le moteur, commandes
+// comprises, et un enregistrement ne pouvait plus etre arrete.
+static void test_publication_non_bloquante() {
+    CHECK(net_init());
+    Listener listener;
+    CHECK(listener.listen(0));
+    const int port = listener.port();
+    CHECK(port > 0);
+
+    LineSocket viewer;                       // le visualiseur : il ne lit rien
+    CHECK(viewer.connect("127.0.0.1", port));
+    LineSocket client = listener.accept(2000);
+    CHECK(client.valid());
+
+    const std::string lot(64 * 1024, 'x');
+    bool rendu = true;
+    const auto debut = std::chrono::steady_clock::now();
+    for (int i = 0; i < 200; ++i) rendu = client.queue(lot + "\n", true) && rendu;
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - debut).count();
+
+    CHECK(rendu);                            // jamais coupe
+    CHECK(client.valid());
+    CHECK(ms < 2000);                        // 12 Mio proposes sans attendre
+    CHECK(client.dropped() > 0);             // des lots ont ete abandonnes
+    CHECK(client.pending() <= LineSocket::kMaxOutbox);
+
+    // Une reponse a une commande, elle, n'est jamais abandonnee.
+    const std::size_t avant = client.dropped();
+    CHECK(client.queue("ok\n"));
+    CHECK(client.dropped() == avant);
+}
+
 int main() {
     test_descriptor();
     test_ring();
     test_engine_record();
+    test_publication_non_bloquante();
     std::printf(g_failed ? "%d echec(s)\n" : "tous les tests passent\n", g_failed);
     return g_failed ? 1 : 0;
 }

@@ -156,3 +156,57 @@ def test_enregistrement_relu_par_raven_cat(enregistrement):
     assert valeurs[entete.index("g_flight.phase")] in {"Sol", "Montee", "Climb",
                                                        "Croisiere", "Cruise", "Descente"}
     assert valeurs[entete.index("g_flight.gear_down")] in {"true", "false"}
+
+
+def test_reste_pilotable_quand_le_visualiseur_ne_lit_plus(tmp_path):
+    """Un visualiseur qui cesse de lire ne doit pas figer l'enregistreur.
+
+    raven publie environ vingt fois par seconde ; si l'envoi etait bloquant,
+    le tampon TCP se remplissait et le moteur n'executait plus aucune
+    commande : impossible d'arreter un enregistrement en cours. Ici, le
+    client se tait volontairement, puis demande stop : la reponse doit
+    arriver tout de suite, et l'enregistrement etre complet.
+    """
+    segment = "raven_mute_%s" % uuid.uuid4().hex[:8]
+    port = _port_libre()
+    sortie = tmp_path / "muet.rvn"
+
+    sim = subprocess.Popen([str(_exe("demo_sim")), "--name", segment, "--seconds", "30"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(1.0)
+    rec = subprocess.Popen([str(_exe("raven")), "--desc", str(DESC),
+                            "--source", "shm:" + segment, "--port", str(port)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(1.0)
+        sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+        sock.sendall(b"hello\n")
+        _lignes(sock, 1.5)
+        sock.sendall(b"rec_all 1\n")
+        sock.sendall(("path %s\n" % sortie.as_posix()).encode())
+        sock.sendall(b"arm\n")
+
+        # Le client se tait : il n'appelle plus recv du tout.
+        time.sleep(3.0)
+
+        depart = time.time()
+        sock.sendall(b"stop\n")
+        etats = []
+        while time.time() - depart < 15.0 and not any("msg=arrete" in e for e in etats):
+            etats += [x for x in _lignes(sock, 1.0) if x.startswith("st ")]
+        delai = time.time() - depart
+        sock.close()
+    finally:
+        for proc in (rec, sim):
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    arrets = [e for e in etats if "msg=arrete" in e]
+    assert arrets, "raven n'a pas traite stop : %s" % etats[-1:]
+    # Le temps de vider le retard accumule, pas des minutes.
+    assert delai < 10.0, "stop traite en %.1f s" % delai
+    assert int(_etat(arrets[-1])["rec"]) > 20, arrets[-1]
+    assert sortie.is_file() and sortie.stat().st_size > 0

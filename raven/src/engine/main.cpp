@@ -4,6 +4,7 @@
 //   raven --desc demo.rvndesc [--source shm:demo] [--port 47800]
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -64,6 +65,8 @@ int main(int argc, char** argv) {
     // Fil principal : un visualiseur a la fois, qui peut aller et venir.
     LineSocket client;
     auto next_update = std::chrono::steady_clock::now();
+    auto next_report = next_update;
+    std::size_t dropped_signale = 0;
     while (!g_stop) {
         if (!client.valid()) {
             client = listener.accept(200);
@@ -77,11 +80,21 @@ int main(int argc, char** argv) {
             std::fflush(stdout);
             continue;
         }
-        for (const std::string& l : lines) client.send(engine.command(l));
+        // Reponses aux commandes : jamais abandonnees. Mises a jour : le
+        // visualiseur affiche un etat, on saute un lot plutot que d'attendre.
+        for (const std::string& l : lines) client.queue(engine.command(l));
         const auto now = std::chrono::steady_clock::now();
         if (now >= next_update) {                     // ~20 mises a jour par seconde
-            client.send(engine.updates());
+            client.queue(engine.updates(), true);
             next_update = now + std::chrono::milliseconds(50);
+        }
+        if (!client.flush()) continue;
+        if (client.dropped() != dropped_signale && now >= next_report) {
+            std::printf("visualiseur lent : %llu lot(s) de mises a jour abandonne(s)\n",
+                        (unsigned long long)client.dropped());
+            std::fflush(stdout);
+            dropped_signale = client.dropped();
+            next_report = now + std::chrono::seconds(1);
         }
     }
     engine.command("stop");                           // ferme proprement un .rvn en cours
