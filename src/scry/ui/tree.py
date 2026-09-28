@@ -122,6 +122,24 @@ def build_tree(struct_info: model.Struct) -> TreeNode:
     return root
 
 
+def filter_structs(structs, motif: str):
+    """(index, structure) des structures a afficher pour un motif.
+
+    Un motif contenant un joker est traite comme un glob sur le nom qualifie ;
+    sinon c'est une recherche de texte sans egard a la casse, parce que taper
+    'sim' doit suffire. Ce filtre ne retire rien du modele : voir
+    [introspection] include_types pour cela.
+    """
+    motif = (motif or "").strip()
+    if not motif:
+        return list(enumerate(structs))
+    if any(c in motif for c in "*?["):
+        return [(i, s) for i, s in enumerate(structs)
+                if model.matches_type(s.name, [motif])]
+    bas = motif.lower()
+    return [(i, s) for i, s in enumerate(structs) if bas in s.name.lower()]
+
+
 def find(root: TreeNode, node_id: Optional[str]) -> Optional[TreeNode]:
     if node_id is None:
         return None

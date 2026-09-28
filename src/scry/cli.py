@@ -41,11 +41,17 @@ def _print_report(introspector, verbose):
         print(line, file=sys.stderr)
 
 
+def _introspector(args, cfg):
+    """Introspector configure, avec le filtre de types de la ligne de commande."""
+    return Introspector(cfg, include_types=getattr(args, "type", None),
+                        exclude_types=getattr(args, "exclude_type", None))
+
+
 def cmd_check(args, cfg):
     print(cfg.describe())
     print()
     try:
-        files = Introspector(cfg).resolve_headers(args.header)
+        files = _introspector(args, cfg).resolve_headers(args.header)
         print("Headers (%d) :" % len(files))
         for path in files:
             print("  %s" % path)
@@ -67,7 +73,7 @@ def cmd_check(args, cfg):
 
 
 def cmd_dump(args, cfg):
-    introspector = Introspector(cfg)
+    introspector = _introspector(args, cfg)
     structs = introspector.parse(args.header)
 
     for s in structs:
@@ -94,15 +100,17 @@ def cmd_dump(args, cfg):
                   % (v.qualified_name, v.field.type_name, v.field.kind, v.field.size,
                      "  const" if v.is_const else ""))
         print()
-    print("%d structure(s), %d variable(s) globale(s) depuis %d header(s)."
-          % (len(structs), len(introspector.variables), len(introspector.report.parsed)))
+    ecartes = len(introspector.report.filtered)
+    print("%d structure(s), %d variable(s) globale(s) depuis %d header(s)%s."
+          % (len(structs), len(introspector.variables), len(introspector.report.parsed),
+             ", %d type(s) ecarte(s) par le filtre" % ecartes if ecartes else ""))
     _print_report(introspector, args.verbose)
     return 1 if introspector.report.conflicts else 0
 
 
 def cmd_gen(args, cfg):
     from scry.codegen import generator as codegen
-    introspector = Introspector(cfg)
+    introspector = _introspector(args, cfg)
     structs = introspector.parse(args.header)
     path = codegen.generate(structs, cfg, header=args.header)
     print("Ecrit : %s  (%d structures)" % (path, len(structs)))
@@ -120,7 +128,7 @@ def cmd_gen(args, cfg):
 
 def cmd_json(args, cfg):
     from scry.codegen import generator as codegen
-    introspector = Introspector(cfg)
+    introspector = _introspector(args, cfg)
     structs = introspector.parse(args.header)
     print("Ecrit : %s" % codegen.dump_json(structs, args.out, cfg,
                                             headers=introspector.report.parsed))
@@ -140,7 +148,7 @@ def cmd_diff(args, cfg):
         new = diff.load(args.new)
         introspector = None
     else:
-        introspector = Introspector(cfg)
+        introspector = _introspector(args, cfg)
         structs = introspector.parse(args.header)
         new = diff.document(structs, cfg, introspector.report.parsed)
 
@@ -156,7 +164,7 @@ def cmd_diff(args, cfg):
 
 def cmd_raven(args, cfg):
     from scry.codegen import raven
-    introspector = Introspector(cfg)
+    introspector = _introspector(args, cfg)
     introspector.parse(args.header)
     names = args.channel or cfg.get_list("raven", "channels")
     out_dir = args.out or str(cfg.output_dir)
@@ -172,7 +180,7 @@ def cmd_raven(args, cfg):
 def cmd_producer(args, cfg):
     """Genere et compile le producteur de demonstration, et le lance au besoin."""
     from scry import producer
-    introspector = Introspector(cfg)
+    introspector = _introspector(args, cfg)
     structs = introspector.parse(args.header)
     try:
         exe = producer.build(structs, cfg, header=args.header)
@@ -201,7 +209,7 @@ def cmd_watch(args, cfg):
 
     from scry import producer
     from scry.runtime import shm, watch
-    introspector = Introspector(cfg)
+    introspector = _introspector(args, cfg)
     structs = introspector.parse(args.header)
     name = args.name or producer.segment_name(cfg)
     try:
@@ -243,7 +251,7 @@ def cmd_verify(args, cfg):
                   % ", ".join(sorted(wanted)), file=sys.stderr)
             return 1
 
-    introspector = Introspector(cfg)
+    introspector = _introspector(args, cfg)
     structs = introspector.parse(args.header)
     abi_path, results = verify.run(structs, cfg, profiles, header=args.header)
 
@@ -282,7 +290,7 @@ def cmd_viewer(args, cfg):
         return 1
     from scry.viewer import build as viewer_build
 
-    introspector = Introspector(cfg)
+    introspector = _introspector(args, cfg)
     structs = introspector.parse(args.header)
     try:
         exe = viewer_build.build(structs, cfg, header=args.header, fetch=args.fetch_imgui)
@@ -309,7 +317,8 @@ def cmd_ui(args, cfg):
         print("[erreur] interface graphique indisponible : %s" % exc, file=sys.stderr)
         print("Installer les dependances UI : pip install -e .[ui]", file=sys.stderr)
         return 1
-    app.main(cfg=cfg, header=args.header)
+    app.main(cfg=cfg, header=args.header, include_types=args.type,
+             exclude_types=args.exclude_type)
     return 0
 
 
@@ -327,6 +336,14 @@ def main(argv=None):
     common.add_argument("-v", "--verbose", action="store_true",
                         default=argparse.SUPPRESS,
                         help="details : origine des types, doublons")
+    common.add_argument("-t", "--type", action="append", metavar="MOTIF",
+                        default=argparse.SUPPRESS,
+                        help="ne garder que ces types : motifs glob sur le nom qualifie "
+                             "('sim::*'), cumulable ; sinon [introspection] include_types")
+    common.add_argument("-x", "--exclude-type", action="append", metavar="MOTIF",
+                        default=argparse.SUPPRESS,
+                        help="ecarter ces types, cumulable ; l'emporte sur -t ; "
+                             "sinon [introspection] exclude_types")
     common.add_argument("--traceback", action="store_true",
                         default=argparse.SUPPRESS,
                         help="pile complete en cas d'erreur")
@@ -388,6 +405,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     args.header = getattr(args, "header", None)
     args.config = getattr(args, "config", None)
+    args.type = getattr(args, "type", None)
+    args.exclude_type = getattr(args, "exclude_type", None)
     args.verbose = getattr(args, "verbose", False)
     args.traceback = getattr(args, "traceback", False)
     cfg = load_config(args.config) if args.config else load_config()

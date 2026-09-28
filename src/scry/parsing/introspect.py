@@ -123,6 +123,7 @@ class ParseReport(object):
         self.failures = []      # type: List[Tuple[str, str]]
         self.duplicates = []    # type: List[str]
         self.conflicts = []     # type: List[str]
+        self.filtered = []      # type: List[str]   types ecartes par le filtre
 
     @property
     def ok(self) -> bool:
@@ -139,12 +140,21 @@ class ParseReport(object):
         if verbose:
             for msg in self.duplicates:
                 out.append("[doublon] %s" % msg)
+            if self.filtered:
+                noms = ", ".join(self.filtered[:8])
+                if len(self.filtered) > 8:
+                    noms += ", ..."
+                out.append("[filtre] %d type(s) ecarte(s) : %s" % (len(self.filtered), noms))
         return out
 
 
 class Introspector(object):
-    def __init__(self, cfg: Optional[Config] = None):
+    def __init__(self, cfg: Optional[Config] = None, include_types=None, exclude_types=None):
+        """include_types et exclude_types priment sur [introspection] : ce sont
+        les options -t et -x de la ligne de commande."""
         self.cfg = cfg or load_config()
+        self._include_types = include_types
+        self._exclude_types = exclude_types
         self._xml_config = None
         self.report = ParseReport()
         self._comments = SourceComments()
@@ -191,6 +201,20 @@ class Introspector(object):
     @property
     def stop_on_error(self) -> bool:
         return self.cfg.get_bool("introspection", "stop_on_error", False)
+
+    @property
+    def include_types(self) -> List[str]:
+        """Motifs des types a garder. Vide = tous."""
+        if self._include_types is not None:
+            return [str(p) for p in self._include_types]
+        return self.cfg.get_list("introspection", "include_types")
+
+    @property
+    def exclude_types(self) -> List[str]:
+        """Motifs des types a ecarter. L'emporte sur include_types."""
+        if self._exclude_types is not None:
+            return [str(p) for p in self._exclude_types]
+        return self.cfg.get_list("introspection", "exclude_types")
 
     @property
     def root_globs(self) -> List[str]:
@@ -292,7 +316,10 @@ class Introspector(object):
                 "Aucun header n'a pu etre parse :\n  %s"
                 % "\n  ".join(self.report.lines(verbose=True)))
 
-        return [merged[name] for name in order]
+        structs, ecartes = model.select_types(
+            [merged[name] for name in order], self.include_types, self.exclude_types)
+        self.report.filtered = ecartes
+        return structs
 
     @staticmethod
     def _describe_failure(exc: Exception) -> str:
