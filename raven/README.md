@@ -80,9 +80,21 @@ ctest --test-dir build/raven
   `third_party/README.md`), ou via `-DRAVEN_IMGUI_DIR=...`. Sous Windows, il
   utilise Win32 + DirectX 11 ; ailleurs, GLFW + OpenGL 3 (`libglfw3-dev`).
 - `demo_sim` appelle Scry en Python pendant le build (`-DRAVEN_DEMO=OFF` pour
-  s'en passer).
+  s'en passer). Scry a besoin de castxml : dans le `PATH`, ou déclaré dans
+  `[paths] castxml` de `scry.ini`.
 - Sous Visual Studio : ouvrir le dossier `raven` (CMake), ou
   `cmake -S raven -B build/raven -G "Visual Studio 17 2022"`.
+
+### Windows
+
+`ravenun_demo.bat` fait tout : venv, CMake avec Visual Studio 2022,
+compilation en Release, puis le simulateur et l'enregistreur dans deux
+fenêtres et le visualiseur au premier plan. `--no-view` s'arrête avant l'IHM.
+
+La chaîne est vérifiée automatiquement, sans IHM, par `tests/test_raven_e2e.py` :
+le simulateur publie, `raven` acquiert sans perte, enregistre sur ordre du
+protocole texte, et `raven-cat` relit le `.rvn`. Le test saute tant que les
+exécutables ne sont pas construits.
 
 Essai complet de la démo, dans trois terminaux :
 
