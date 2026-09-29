@@ -29,7 +29,8 @@ find_package(Threads REQUIRED)
 add_library(raven_core STATIC
   src/core/descriptor.cpp
   src/core/rvn.cpp
-  src/core/net.cpp)
+  src/core/net.cpp
+  src/core/sockets.cpp)
 target_include_directories(raven_core PUBLIC include)
 if(WIN32)
   target_link_libraries(raven_core PUBLIC ws2_32)
@@ -53,6 +54,10 @@ add_executable(raven_tests tests/test_core.cpp)
 target_link_libraries(raven_tests PRIVATE raven_engine)
 enable_testing()
 add_test(NAME raven_tests COMMAND raven_tests)
+
+add_executable(raven_net_tests tests/test_net.cpp)
+target_link_libraries(raven_net_tests PRIVATE raven_core Threads::Threads)
+add_test(NAME raven_net_tests COMMAND raven_net_tests)
 
 if(RAVEN_VIEW)
   add_subdirectory(src/view)

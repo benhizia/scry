@@ -137,6 +137,17 @@ c'est ce que la sentinelle doit attraper.
   (`include/raven/source.h`). TCP, multicast et fichier s'y ajouteront sans
   toucher au moteur.
 
+## Couche réseau (mode réseau, en cours)
+
+`include/raven/sockets.h` : `raven::net::TcpSocket`, `TcpListener`,
+`UdpSocket`, `MulticastSocket` et `Endpoint`, repris de SwitchSpy
+(InterfaceInspector). Une socket appartient à un seul fil, toutes les
+attentes ont un délai, et une connexion TCP est suivie jusqu'à son issue
+(réussie, refusée ou délai écoulé). Plusieurs abonnés multicast du même poste
+partagent un port : RAVEN écoute à côté des vrais consommateurs. Tests :
+`raven_net_tests`. Le plan de reprise complet est dans
+[../docs/RAVEN_REPRISE_SWITCHSPY.md](../docs/RAVEN_REPRISE_SWITCHSPY.md).
+
 ## Pas encore là
 
 Voir [RAVEN_CONTOUR.md](../docs/RAVEN_CONTOUR.md). En particulier : relecture

@@ -1,31 +1,14 @@
 #include "raven/net.h"
 
-#include <cerrno>
-#include <cstring>
-
-#ifdef _WIN32
-#  ifndef WIN32_LEAN_AND_MEAN
-#    define WIN32_LEAN_AND_MEAN
-#  endif
-#  include <winsock2.h>
-#  include <ws2tcpip.h>
-typedef int socklen_t;
-#  define RV_CLOSE closesocket
-#  define RV_NOSIGNAL 0
-#else
-#  include <arpa/inet.h>
-#  include <fcntl.h>
-#  include <netdb.h>
-#  include <netinet/in.h>
-#  include <netinet/tcp.h>
-#  include <sys/select.h>
-#  include <sys/socket.h>
-#  include <unistd.h>
-#  define RV_CLOSE ::close
-#  define RV_NOSIGNAL MSG_NOSIGNAL
-#endif
+#include "net_platform.h"
 
 namespace raven {
+
+using detail::wait_readable;
+using detail::wait_writable;
+using detail::set_nonblocking;
+using detail::would_block;
+using detail::no_delay;
 
 bool net_init() {
 #ifdef _WIN32
@@ -36,51 +19,10 @@ bool net_init() {
 #endif
 }
 
-static bool wait_writable(intptr_t fd, int timeout_ms) {
-    fd_set set;
-    FD_ZERO(&set);
-    FD_SET((unsigned)fd, &set);
-    timeval tv;
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    return select(int(fd + 1), nullptr, &set, nullptr, &tv) > 0;
-}
 
-static bool wait_readable(intptr_t fd, int timeout_ms) {
-    fd_set set;
-    FD_ZERO(&set);
-    FD_SET((unsigned)fd, &set);
-    timeval tv;
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    return select(int(fd + 1), &set, nullptr, nullptr, &tv) > 0;
-}
 
-// Sans cela, un visualiseur qui ne lit plus remplirait le tampon TCP et
-// figerait raven dans ::send, commandes comprises : plus moyen d'arreter un
-// enregistrement.
-static void set_nonblocking(intptr_t fd) {
-#ifdef _WIN32
-    u_long mode = 1;
-    ioctlsocket(fd, FIONBIO, &mode);
-#else
-    const int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, (flags < 0 ? 0 : flags) | O_NONBLOCK);
-#endif
-}
 
-static bool would_block() {
-#ifdef _WIN32
-    return WSAGetLastError() == WSAEWOULDBLOCK;
-#else
-    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
-#endif
-}
 
-static void no_delay(intptr_t fd) {
-    int one = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof one);
-}
 
 LineSocket& LineSocket::operator=(LineSocket&& o) noexcept {
     if (this != &o) {
