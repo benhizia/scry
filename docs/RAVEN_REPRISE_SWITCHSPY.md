@@ -236,7 +236,11 @@ automatiquement**. On les reprend en tests CTest automatisés :
 ## 5. Découpage proposé
 
 1. **Couche réseau** : `raven::net` (TCP, UDP, multicast) reprise de SwitchSpy,
-   avec ses tests unitaires. `LineSocket` et `Listener` fusionnés dedans.
+   avec ses tests unitaires. **Fait** : `include/raven/sockets.h`,
+   `src/core/sockets.cpp`, `tests/test_net.cpp`. `LineSocket` et `Listener`
+   restent pour le protocole de contrôle, mais partagent désormais les
+   utilitaires de plateforme (`src/core/net_platform.h`) ; leur fusion complète
+   attendra que le protocole bouge.
 2. **Espion multicast** : `MulticastSource`, messages dans le `.rvn`, colonne
    *direction* inutile ici ; scénarios 03 et 04 automatisés. C'est le plus
    simple, sans transfert.
