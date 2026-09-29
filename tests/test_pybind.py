@@ -39,6 +39,37 @@ def _struct():
     ])
 
 
+def _vec(name, offset, qualified, elem, is_const=False):
+    """Membre std::vector : son element est decrit a part, car il n'est pas
+    dans la structure."""
+    return F(name, offset, 24, model.CLASS, qualified.split("::")[-1],
+             qualified_type=qualified, container="vector", elem=elem, is_const=is_const)
+
+
+def _struct_stl():
+    item = F("[]", 0, 8, model.STRUCT, "Item", qualified_type="ns::Item",
+             children=[F("id", 0, 8, type_name="long long int")])
+    return model.Struct(name="ns::P", size=240, align=8, header="p.h", fields=[
+        _vec("gains", 0, "std::vector<double>", F("[]", 0, 8, type_name="double")),
+        _vec("items", 24, "std::vector<ns::Item>", item),
+        _vec("noms", 48, "std::vector<std::basic_string<char>>",
+             F("[]", 0, 32, model.CLASS, "basic_string<char>",
+               qualified_type="std::basic_string<char>")),
+        _vec("modes", 72, "std::vector<ns::Mode>",
+             F("[]", 0, 1, model.ENUM, "Mode", enum_type="ns::Mode",
+               qualified_type="ns::Mode", enum_items=[("Off", 0), ("On", 10)])),
+        _vec("drapeaux", 96, "std::vector<bool>", F("[]", 0, 1, type_name="bool")),
+        _vec("figes", 120, "std::vector<ns::Item>", item, is_const=True),
+        _vec("inconnus", 144, "std::vector<autre::T>",
+             F("[]", 0, 8, model.STRUCT, "T", qualified_type="autre::T")),
+        F("bornes", 168, 8, model.POINTER, "ns::Item *", qualified_type="ns::Item"),
+        F("nb_bornes", 176, 4),
+        F("mesures", 184, 8, model.POINTER, "double const *"),
+        F("nb_mesures", 192, 2, type_name="short unsigned int"),
+        F("opaque", 200, 8, model.POINTER, "void *"),
+    ])
+
+
 def _render():
     s = _struct()
     return s, pybind.render([s], load_config(EXAMPLE_INI))
@@ -319,6 +350,198 @@ def test_stub_declare_fonctions_et_surcharges():
     assert 'def doubler(v: "int") -> "int": ...' in stub
     assert "externe" not in stub and "virtuelle" not in stub
     compile(stub, "sut.pyi", "exec")
+
+
+# -- conteneurs STL et paires pointeur + compteur ----------------------------
+def _item_struct():
+    return model.Struct(name="ns::Item", size=8, align=8, header="p.h",
+                        fields=[F("id", 0, 8, type_name="long long int")])
+
+
+def _render_stl(tmp_path=None, spans=""):
+    structs = [_struct_stl(), _item_struct()]
+    if spans:
+        ini = tmp_path / "scry.ini"
+        ini.write_text("[pybind]\nspans = %s\n" % spans, encoding="utf-8")
+        cfg = load_config(ini)
+    else:
+        cfg = load_config(EXAMPLE_INI)
+    return structs, cfg, pybind.render(structs, cfg)
+
+
+def test_vector_numerique_en_vue_numpy_et_structures_en_sequence():
+    _, _, text = _render_stl()
+    assert 'detail::vector_member(c0, "gains", &T0::gains);' in text
+    assert 'detail::vector_member(c0, "items", &T0::items);' in text
+    # Une classe de vue par TYPE de vector, et le type vient du membre :
+    # reecrire 'std::vector<...>' laisserait l'allocateur a deviner.
+    assert 'detail::bind_vector_view<decltype(T0::items)>(m, "_VectorView_ns_Item");' in text
+    assert 'detail::bind_vector_view<decltype(T0::noms)>(m, "_VectorView_str");' in text
+    assert 'detail::bind_vector_view<decltype(T0::modes)>(m, "_VectorView_ns_Mode");' in text
+    # Numerique : aucune classe de vue, c'est numpy qui la porte.
+    assert "decltype(T0::gains)" not in text
+
+
+def test_vector_non_exposable_est_explique():
+    _, _, text = _render_stl()
+    assert "drapeaux : std::vector<bool> : specialisation a champs de bits" in text
+    assert "figes : std::vector const d'elements non numeriques" in text
+    assert "inconnus : std::vector : type autre::T absent du module" in text
+    # Aucune classe de vue n'est enregistree pour ce que l'on n'expose pas.
+    assert "_VectorView_autre_T" not in text
+    assert "decltype(T0::figes)" not in text
+
+
+def test_une_seule_vue_par_type_de_vector():
+    """Deux membres du meme type de vector partagent une classe Python : la
+    declarer deux fois serait refuse a l'execution par pybind11."""
+    s = _struct_stl()
+    item = s.fields[1].elem
+    s.fields.append(_vec("autres", 208, "std::vector<ns::Item>", item))
+    text = pybind.render([s, _item_struct()], load_config(EXAMPLE_INI))
+    assert text.count('bind_vector_view<decltype(T0::items)>') == 1
+    assert "_VectorView_ns_Item" in text
+    assert 'detail::vector_member(c0, "autres", &T0::autres);' in text
+
+
+def test_span_pairs_lit_la_configuration(tmp_path):
+    ini = tmp_path / "scry.ini"
+    ini.write_text("[pybind]\nspans = ns::P::bornes: nb_bornes; ns::P::mesures:nb_mesures;"
+                   " incomplet; ns::P::x: 3invalide\n", encoding="utf-8")
+    # Le separateur est un ':' seul : celui de 'ns::P' n'en est pas un.
+    assert pybind.span_pairs(load_config(ini)) == {
+        ("ns::P", "bornes"): "nb_bornes", ("ns::P", "mesures"): "nb_mesures"}
+
+
+def test_span_pointeur_et_compteur(tmp_path):
+    _, _, text = _render_stl(tmp_path, "ns::P::bornes: nb_bornes; ns::P::mesures: nb_mesures")
+    assert 'detail::span_member(c0, "bornes", &T0::bornes, &T0::nb_bornes);' in text
+    assert 'detail::span_member(c0, "mesures", &T0::mesures, &T0::nb_mesures);' in text
+    # Le type pointe recoit sa vue, comme un tableau de structures.
+    assert 'detail::bind_view<T1>(m, "_ArrayView_ns_Item");' in text
+    # Sans declaration, un pointeur reste une adresse en lecture seule.
+    _, _, sans = _render_stl()
+    assert 'reinterpret_cast<std::uintptr_t>(o.bornes)' in sans
+
+
+def test_span_mal_declare_donne_un_commentaire_pas_un_build_casse(tmp_path):
+    """Une faute de frappe dans scry.ini ne doit pas casser la compilation de
+    l'application : elle doit se lire dans le code genere."""
+    _, _, text = _render_stl(tmp_path, "ns::P::bornes: nb_bidon; ns::P::opaque: nb_bornes;"
+                                       " ns::P::nb_bornes: nb_bornes; ns::Absente::p: n")
+    assert "bornes : [pybind] spans : compteur 'nb_bidon' introuvable" in text
+    assert "opaque : [pybind] spans : pointeur vers void * : ni structure decrite" in text
+    assert "n'est pas un membre pointeur de ns::P" in text
+    assert "ns::Absente::p : [pybind] spans : classe ns::Absente absente du module" in text
+    # Aucun appel genere : seule la definition du modele reste dans detail.
+    assert "detail::span_member(" not in text
+    # Le pointeur garde son exposition ordinaire, une adresse en lecture seule.
+    assert "reinterpret_cast<std::uintptr_t>(o.bornes)" in text
+
+
+def test_span_sur_un_membre_sans_adresse(tmp_path):
+    """span_member prend deux pointeurs sur membre. Un membre non public,
+    statique ou champ de bits n'en a pas : le C++ ne compilerait pas."""
+    ini = tmp_path / "scry.ini"
+    ini.write_text("[pybind]\nspans = ns::P::bornes: nb_bornes\n", encoding="utf-8")
+    cfg = load_config(ini)
+    for attribut, valeur, attendu in [("access", "private", "un membre private"),
+                                      ("is_static", True, "un membre statique")]:
+        s = _struct_stl()
+        setattr(_par_nom(s, "bornes"), attribut, valeur)
+        text = pybind.render([s, _item_struct()], cfg)
+        assert attendu in text, attendu
+        assert "detail::span_member(" not in text
+    # Un compteur en champ de bits est refuse pour la meme raison.
+    s = _struct_stl()
+    _par_nom(s, "nb_bornes").bit_width = 12
+    text = pybind.render([s, _item_struct()], cfg)
+    assert "un champ de bits" in text and "detail::span_member(" not in text
+
+
+def _par_nom(struct, name):
+    return next(f for f in struct.fields if f.name == name)
+
+
+def test_stub_distingue_les_deux_sortes_de_vues(tmp_path):
+    structs, cfg, _ = _render_stl(tmp_path, "ns::P::bornes: nb_bornes")
+    binder = pybind.Binder(structs, (), (), pybind.span_pairs(cfg))
+    stub = pybind.render_stub(binder)
+    assert 'gains: "numpy.ndarray"' in stub
+    assert 'items: "VectorView[ns.Item]"' in stub
+    assert 'noms: "VectorView[str]"' in stub
+    assert 'modes: "VectorView[ns.Mode]"' in stub
+    assert 'bornes: "ArrayView[ns.Item]"' in stub
+    # Les deux generiques sont declares, et leur difference dite.
+    assert "class VectorView(Generic[_T])" in stub and "push_back" in stub
+    assert "class ArrayView(Generic[_T])" in stub
+    assert "drapeaux" not in stub and "figes" not in stub and "inconnus" not in stub
+    compile(stub, "sut.pyi", "exec")
+
+
+def test_vector_global(tmp_path):
+    s = _struct_stl()
+    variables = [
+        V("app::g_serie", F("g_serie", 0, 24, model.CLASS, "vector<double>",
+                            qualified_type="std::vector<double>", container="vector",
+                            elem=F("[]", 0, 8, type_name="double"))),
+        V("app::g_items", F("g_items", 0, 24, model.CLASS, "vector<Item>",
+                            qualified_type="std::vector<ns::Item>", container="vector",
+                            elem=s.fields[1].elem)),
+    ]
+    text = pybind.render([s, _item_struct()], load_config(EXAMPLE_INI), variables=variables)
+    assert 'globals.vector("app", "g_serie", []() -> auto& { return ::app::g_serie; });' in text
+    assert 'globals.vector("app", "g_items", []() -> auto& { return ::app::g_items; });' in text
+    binder = pybind.Binder([s, _item_struct()], variables)
+    stub = pybind.render_stub(binder)
+    assert 'g_serie: "numpy.ndarray"' in stub
+    assert 'g_items: "VectorView[ns.Item]"' in stub
+
+
+def test_membre_non_public_jamais_nomme_meme_dans_un_decltype():
+    """include_non_public fait entrer les membres prives dans le modele. Le
+    C++ genere ne doit pas les nommer, decltype compris : hors de la classe,
+    'decltype(T::prive_)' ne compile pas plus que '&T::prive_'."""
+    item = F("[]", 0, 8, model.STRUCT, "Item", qualified_type="ns::Item",
+             children=[F("id", 0, 8, type_name="long long int")])
+    s = model.Struct(name="ns::Q", size=56, align=8, header="q.h", fields=[
+        _vec("cache", 0, "std::vector<ns::Item>", item),
+        F("tableau", 24, 16, model.ARRAY, "ns::Item [2]", array_len=2,
+          elem_type="ns::Item", children=[item]),
+        F("ouvert", 40, 4),
+    ])
+    for f in s.fields[:2]:
+        f.access = "private"
+    text = pybind.render([s, _item_struct()], load_config(EXAMPLE_INI))
+    assert "cache : membre private, non expose" in text
+    assert "tableau : membre private, non expose" in text
+    assert "decltype(T0::cache)" not in text and "T0::tableau" not in text
+    assert 'detail::field(c0, "ouvert", &T0::ouvert);' in text
+
+
+def test_type_imbrique_vu_seulement_comme_element_de_vector():
+    """Sans cela, un std::vector<Truc> dont Truc n'apparait nulle part ailleurs
+    serait ecarte pour un type « absent du module »."""
+    interne = F("[]", 0, 8, model.STRUCT, "Interne", qualified_type="ns::P::Interne",
+                children=[F("v", 0, 8, type_name="double")])
+    s = model.Struct(name="ns::P", size=24, align=8, header="p.h", fields=[
+        _vec("morceaux", 0, "std::vector<ns::P::Interne>", interne)])
+    text = pybind.render([s], load_config(EXAMPLE_INI))
+    assert "using T1 = ns::P::Interne;" in text
+    # Portee : le type imbrique est un attribut de sa classe parente.
+    assert 'detail::class_t<T1> c1(c0, "Interne");' in text
+    assert 'detail::field(c1, "v", &T1::v);' in text
+    assert 'detail::vector_member(c0, "morceaux", &T0::morceaux);' in text
+    assert '_VectorView_ns_P_Interne' in text
+
+
+def test_vector_mode_decide_du_traitement():
+    assert pybind.vector_mode(F("[]", 0, 8, type_name="double")) == "numeric"
+    assert pybind.vector_mode(F("[]", 0, 8, model.STRUCT, "Item",
+                                qualified_type="ns::Item")) == "view"
+    # vector<bool> est une specialisation a champs de bits : pas de data().
+    assert pybind.vector_mode(F("[]", 0, 1, type_name="bool")) == ""
+    assert pybind.vector_mode(None) == ""
 
 
 def test_stub_et_module_embarque():

@@ -8,6 +8,8 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "test_structs_complexe.h"
 
@@ -69,6 +71,31 @@ public:
     int shown = 1;
 };
 
+struct Repere
+{
+    double lat;
+    double lon;
+};
+
+// Conteneurs STL et paires pointeur + compteur : ce dont les interfaces
+// reelles sont pleines, et qui n'etait pas exposable.
+struct Piste
+{
+    std::vector<double>      gains;     // numerique : vue numpy
+    std::vector<Repere>      reperes;   // structures : sequence par reference
+    std::vector<std::string> noms;      // chaines : par copie
+    std::vector<Speed>       allures;   // enums
+    std::vector<bool>        drapeaux;  // specialisation a bits : non liable
+    const std::vector<Repere> figes{};  // const d'agregats : non liable
+
+    Repere*       bornes = nullptr;     // paire pointeur + compteur, declaree
+    int           nb_bornes = 0;        //   dans [pybind] spans
+    const double* mesures = nullptr;
+    std::uint16_t nb_mesures = 0;
+    void*         opaque = nullptr;     // declare en span mais non liable
+    int           nb_opaque = 0;
+};
+
 // Methodes : ce qui fait passer un script de « reposer des variables » a
 // « piloter ». Toutes definies dans la classe, donc liables sans la
 // bibliotheque du tiers.
@@ -117,6 +144,9 @@ static int s_internal = 0;              // static : jamais expose
 extern Child g_child;                   // enfant documente
 extern Hidden g_hidden;
 extern Moteur g_moteur;
+extern Piste g_piste;
+extern std::vector<double> g_serie;     // vector global numerique
+extern std::vector<Repere> g_reperes;   // vector global de structures
 
 namespace inner {
 extern std::uint32_t g_ticks;           // namespace imbrique : sut.cases.inner
@@ -131,6 +161,13 @@ inline double appliquer(Moteur& m, Speed v, double delta = 2.5)
     m.choisir(v);
     m.pousser(delta);
     return m.regime;
+}
+
+// Fait grandir un vector depuis le C++ : c'est ce qui met a l'epreuve une vue
+// gardee par un script, puisqu'un push_back peut deplacer tout le tampon.
+inline void ajouter_repere(Piste& p, double lat, double lon)
+{
+    p.reperes.push_back(Repere{lat, lon});
 }
 
 inline Moteur&     moteur_courant() { return g_moteur; }

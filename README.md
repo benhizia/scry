@@ -638,9 +638,50 @@ Sont également écartées, chacune avec sa raison dans le code généré : les
 fonctions variadiques, les méthodes virtuelles — les appeler marcherait, les
 redéfinir depuis Python demanderait une classe relais, et promettre à moitié
 vaut moins que refuser clairement —, les méthodes non publiques, et tout ce qui
-prend ou rend un type que le module n'expose pas (un `std::vector`, une classe
-d'un autre header). `scry dump` liste l'API telle qu'elle est, `declaree
-seulement` compris.
+prend ou rend un type que le module n'expose pas. `scry dump` liste l'API telle
+qu'elle est, `declaree seulement` compris.
+
+### Conteneurs : `std::vector` et paires pointeur + compteur
+
+Les interfaces réelles en sont pleines. En Python embarqué, même processus,
+`data()` et `size()` sont parfaitement lisibles :
+
+| Membre C++ | En Python |
+|---|---|
+| `std::vector<double>` | vue numpy sans copie ; `v = [1.0, 2.0]` réaffecte, la taille suit |
+| `std::vector<Point>` | `VectorView`, éléments par référence |
+| `std::vector<std::string>`, `std::vector<Mode>` | `VectorView`, éléments par copie |
+| `std::string` | `str`, par copie |
+| `Point* wps` + `int nb_wps` | `ArrayView`, déclaré dans `[pybind] spans` |
+
+```ini
+[pybind]
+spans = sim::Plan::wps: nb_wps
+```
+
+Rien ne permet de deviner qu'un pointeur et un entier voisins vont ensemble, ni
+lequel borne l'autre : c'est une déclaration, pas une heuristique. Une
+déclaration qui ne désigne rien donne un commentaire dans le header généré, pas
+un C++ qui ne compile pas — une faute de frappe dans `scry.ini` ne casse jamais
+le build de l'application.
+
+**Les deux sortes de vues ne se valent pas**, et c'est la chose à retenir :
+
+- `VectorView` garde le **conteneur**, pas ses octets. Elle redemande `data()`
+  et `size()` à chaque indexation, donc un `push_back` du côté C++ entre deux
+  lignes de script ne laisse pas une vue pendante.
+- une vue **numpy**, et `ArrayView` sur un span, tiennent une adresse. Elles
+  sont refaites à chaque accès à l'attribut, ce qui suffit à l'usage normal
+  (`plan.gains[2] = 1.0`), mais il ne faut **pas** les garder au-delà d'une
+  modification du C++ : `g = plan.gains` puis un `resize()` côté simulateur, et
+  `g` pointe dans le vide.
+
+Deux cas restent écartés, dits en commentaire : `std::vector<bool>`, qui est une
+spécialisation à champs de bits sans `data()`, et un `std::vector` **const**
+d'agrégats — il n'y a qu'une classe de vue par type d'élément, et la rendre
+laisserait écrire dedans. Un `std::vector` const numérique, lui, reste lisible :
+sa vue numpy n'est pas inscriptible. Ni `append` ni `resize` depuis Python : la
+taille d'un vecteur de structures ne change que du côté C++.
 
 **Ce que Python voit.** Une variable globale devient une propriété du module
 de son namespace (`sim::g_etat` → `sut.sim.g_etat`). Une structure est une vue
@@ -701,9 +742,9 @@ Le brainstorm complet, avec l'état des lieux mesuré, trente pistes chiffrées
 en valeur, effort et risque, et une feuille de route en quatre phases, est dans
 [docs/AMELIORATIONS.md](docs/AMELIORATIONS.md).
 
-En tête de liste : une CI Linux et Windows/MSVC, les `std::vector` exposés en
-Python embarqué, et le rechargement à chaud des scripts. Le filtrage des types
-et les fonctions du header sont faits.
+En tête de liste : une CI Linux et Windows/MSVC, et le rechargement à chaud des
+scripts. Le filtrage des types, les fonctions du header et les vues sur les
+conteneurs STL sont faits.
 
 ---
 

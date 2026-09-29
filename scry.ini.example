@@ -177,6 +177,12 @@ hide =
 ;   functions = sim::*; sim::compute_trim
 functions =
 hide_functions =
+; Paires pointeur + compteur, exposees comme des sequences. Format
+; 'classe::pointeur: compteur', le compteur etant membre de la meme classe.
+; Rien ne permet de deviner qu'un pointeur et un entier voisins vont ensemble,
+; ni lequel borne l'autre : il faut le declarer.
+;   spans = sim::Plan::wps: nb_wps; sim::Trace::points: nb_points
+spans =
 ; Instances exposees a la main (hors variables globales), annoncees dans le
 ; stub .pyi pour l'autocompletion. Format 'nom: type'.
 ;   globals = moteur: sim::Moteur

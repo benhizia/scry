@@ -24,6 +24,12 @@ testgen::SensorSample g_sensors[4]{};
 Child g_child{};
 Hidden g_hidden{};
 Moteur g_moteur{};
+Piste g_piste{};
+std::vector<double> g_serie{1.0, 2.0};
+std::vector<Repere> g_reperes{{1.0, 2.0}, {3.0, 4.0}};
+// Memoire possedee par l'hote, visee par les paires pointeur + compteur.
+static Repere s_bornes[3] = {{10.0, 20.0}, {11.0, 21.0}, {12.0, 22.0}};
+static const double s_mesures[4] = {0.5, 1.5, 2.5, 3.5};
 namespace inner {
 std::uint32_t g_ticks = 0;
 }
@@ -47,6 +53,14 @@ int main(int argc, char** argv)
     py::scoped_interpreter guard;
     // Pointeur change cote C++ avant le script : Python doit le suivre.
     cases::g_current = &cases::g_sample;
+    cases::g_piste.gains = {1.0, 2.0, 3.0};
+    cases::g_piste.reperes = {{1.0, 2.0}, {3.0, 4.0}};
+    cases::g_piste.noms = {"nord", "sud"};
+    cases::g_piste.allures = {cases::Speed::Slow, cases::Speed::Fast};
+    cases::g_piste.bornes = cases::s_bornes;
+    cases::g_piste.nb_bornes = 3;
+    cases::g_piste.mesures = cases::s_mesures;
+    cases::g_piste.nb_mesures = 4;
     try {
         py::eval_file(argv[1]);
     } catch (const py::error_already_set& e) {
@@ -66,5 +80,20 @@ int main(int argc, char** argv)
                 static_cast<int>(cases::g_plan.legs[2].phase), cases::g_plan.payload.raw);
     std::printf("MOTEUR %g %d\n", cases::g_moteur.regime,
                 static_cast<int>(cases::g_moteur.allure));
+    std::printf("GAINS_N %zu\n", cases::g_piste.gains.size());
+    std::printf("GAINS_V");
+    for (double g : cases::g_piste.gains)
+        std::printf(" %g", g);
+    std::printf("\n");
+    std::printf("REPERE0 %g %g\n", cases::g_piste.reperes[0].lat,
+                cases::g_piste.reperes[0].lon);
+    std::printf("NOMS %s %s\n", cases::g_piste.noms[0].c_str(), cases::g_piste.noms[1].c_str());
+    std::printf("ALLURE1 %d\n", static_cast<int>(cases::g_piste.allures[1]));
+    std::printf("BORNE1 %g %g\n", cases::s_bornes[1].lat, cases::s_bornes[1].lon);
+    std::printf("SERIE");
+    for (double v : cases::g_serie)
+        std::printf(" %g", v);
+    std::printf("\n");
+    std::printf("REPERES_N %zu %g\n", cases::g_reperes.size(), cases::g_reperes[1].lat);
     return 0;
 }

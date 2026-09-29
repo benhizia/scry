@@ -96,7 +96,12 @@ def built(tmp_path_factory):
         + toolchain.ini_castxml(extra=["include_paths = %s" % DATA.as_posix()])
         # include_non_public : les membres prives entrent dans le modele, les
         # bindings doivent les ecarter pour compiler.
-        + "[introspection]\nstop_on_error = true\ninclude_non_public = true\n",
+        + "[introspection]\nstop_on_error = true\ninclude_non_public = true\n"
+        # Paires pointeur + compteur : rien ne permet de les deviner. La
+        # derniere vise un void*, non liable : elle doit donner un commentaire,
+        # pas un code qui ne compile pas.
+        + "[pybind]\nspans = cases::Piste::bornes: nb_bornes;"
+          " cases::Piste::mesures: nb_mesures; cases::Piste::opaque: nb_opaque\n",
         encoding="utf-8")
     cfg = load_config(ini)
     introspector = Introspector(cfg)
@@ -382,6 +387,99 @@ def test_le_header_genere_dit_pourquoi_une_fonction_manque(built):
     assert "cases::journaliser" in header and "variadique" in header
     assert "cases::Moteur::virtuelle" in header and "methode virtuelle" in header
     assert "cases::Moteur::cachee" in header and "methode private" in header
+
+
+def test_vector_numerique_est_une_vue_numpy(built, tmp_path):
+    out = run(built, tmp_path, """
+        import sut
+        p = sut.cases.g_piste
+        assert len(p.gains) == 3 and p.gains[1] == 2.0
+        p.gains[2] = 9.5                  # ecrit a travers la vue
+        assert p.gains.base is not None    # vue, pas copie
+        p.gains = [4.0, 5.0]               # la taille suit la valeur donnee
+        assert len(p.gains) == 2
+        sut.cases.g_serie = [7.0, 8.0, 9.0]        # vector global
+        assert list(sut.cases.g_serie) == [7.0, 8.0, 9.0]
+    """)
+    assert out["GAINS_N"] == "2"
+    assert out["GAINS_V"] == "4 5"
+    assert out["SERIE"] == "7 8 9"
+
+
+def test_vector_de_structures_est_une_sequence_par_reference(built, tmp_path):
+    out = run(built, tmp_path, """
+        import sut
+        p = sut.cases.g_piste
+        assert len(p.reperes) == 2
+        p.reperes[0].lat = 42.0            # reference, pas copie
+        assert [r.lon for r in p.reperes] == [2.0, 4.0]   # iterable
+        assert p.reperes[-1].lat == 3.0                    # indice negatif
+        try:
+            p.reperes[2]
+            raise SystemExit("indice hors bornes accepte")
+        except IndexError:
+            pass
+        # Chaines et enums dans un vector.
+        p.noms[1] = "est"
+        assert p.noms[0] == "nord"
+        assert p.allures[1] == sut.cases.Speed.Fast
+        p.allures[0] = sut.cases.Speed.Max
+        # to_dict traverse les vues comme les tableaux.
+        assert p.to_dict()["reperes"][0]["lat"] == 42.0
+        r = sut.cases.g_reperes                            # vector global
+        r[1].lat = 33.0
+    """)
+    assert out["REPERE0"] == "42 2"
+    assert out["NOMS"] == "nord est"
+    assert out["ALLURE1"] == "10"
+    assert out["REPERES_N"] == "2 33"
+
+
+def test_une_vue_de_vector_survit_a_un_push_back(built, tmp_path):
+    """La raison d'etre de VectorView : elle garde le CONTENEUR, pas ses
+    octets. Un push_back du cote C++ peut deplacer tout le tampon ; la vue
+    redemande data() et size() a chaque indexation, et reste donc juste."""
+    run(built, tmp_path, """
+        import sut
+        p = sut.cases.g_piste
+        vue = p.reperes
+        avant = len(vue)
+        for i in range(40):                      # de quoi forcer des reallocations
+            sut.cases.ajouter_repere(p, float(i), -float(i))
+        assert len(vue) == avant + 40            # la longueur est relue
+        assert vue[avant].lat == 0.0             # et l'adresse aussi
+        assert vue[-1].lon == -39.0
+    """)
+
+
+def test_paire_pointeur_compteur_declaree_en_span(built, tmp_path):
+    out = run(built, tmp_path, """
+        import sut
+        p = sut.cases.g_piste
+        assert len(p.bornes) == 3                  # Repere* + nb_bornes
+        p.bornes[1].lat = 77.0
+        assert [b.lon for b in p.bornes] == [20.0, 21.0, 22.0]
+        m = p.mesures                               # const double* + nb_mesures
+        assert list(m) == [0.5, 1.5, 2.5, 3.5]
+        assert m.flags.writeable is False           # le const est garde
+        # Le pointeur nul donne une sequence vide, pas un plantage.
+        assert len(sut.cases.Piste().bornes) == 0
+    """)
+    assert out["BORNE1"] == "77 21"
+
+
+def test_ce_qui_n_est_pas_exposable_est_explique(built):
+    header = (built[3] / "scry_pybind.generated.h").read_text(encoding="utf-8")
+    assert "drapeaux" in header and "std::vector<bool>" in header
+    assert "figes" in header and "const" in header
+    assert "opaque" in header and "ni structure decrite, ni nombre" in header
+    stub = (built[3] / "sut.pyi").read_text(encoding="utf-8")
+    assert 'gains: "numpy.ndarray"' in stub
+    assert 'reperes: "VectorView[cases.Repere]"' in stub
+    assert 'noms: "VectorView[str]"' in stub
+    assert 'bornes: "ArrayView[cases.Repere]"' in stub
+    assert 'mesures: "numpy.ndarray"' in stub
+    assert "drapeaux" not in stub and "figes" not in stub
 
 
 def test_heritage_prive_et_docstrings(built, tmp_path):

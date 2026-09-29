@@ -33,7 +33,7 @@ faiblesses dominent :
 |---|---|---|---|
 | A1 | CI GitHub Actions Linux + Windows/MSVC | valide enfin la cible réelle à chaque push | M |
 | B1 | Fonctions du header exposées en Python | passer de « lire/écrire » à « piloter » | M | **fait** |
-| B2 | `std::vector`, `std::string` et pointeurs+taille en vues Python | les interfaces réelles en sont pleines | M |
+| B2 | `std::vector`, `std::string` et pointeurs+taille en vues Python | les interfaces réelles en sont pleines | M | **fait** |
 | C1 | Filtrage des types (IHM, CLI, config) | conditionne l'usage sur un vrai header | S | **fait** |
 | B3 | Rechargement à chaud des scripts embarqués | cycle de mise au point en secondes, sans relancer le simulateur | S |
 
@@ -60,7 +60,7 @@ faiblesses dominent :
 | Aucune CI | pas de dossier `.github/` |
 | Parsing lent à froid | 9,3 s à froid, 0,49 s avec cache, sur `test_structs_complexe.h` |
 | Compilation des bindings lente | ~20 s pour un module pybind11 sur un seul header |
-| STL ignorée par les bindings | `std::vector`, `std::map`… : « non liée (STL, pas un POD) » |
+| ~~STL ignorée par les bindings~~ | `std::vector` et les paires pointeur + compteur sont exposés (B2) ; `std::map` non |
 | Aucune fonction exposée | seuls types et variables passent en Python |
 | Pas de filtrage des types | tous les types des headers apparaissent dans les IHM |
 | Code mort | `SharedMemorySource` (`runtime/memory.py`) remplacé par `runtime/shm.py` |
@@ -89,7 +89,7 @@ faiblesses dominent :
 | A4 | Détection des conteneurs STL illisibles à distance | Fiabilité | 3 | S | P2 |
 | A5 | Offset des bases virtuelles sur l'objet complet | Fiabilité | 2 | M | P3 |
 | B1 | Fonctions du header exposées en Python | Python embarqué | 5 | M | P1, fait |
-| B2 | Vues Python sur `std::vector`, `std::string`, pointeur + taille | Python embarqué | 5 | M | P1 |
+| B2 | Vues Python sur `std::vector`, `std::string`, pointeur + taille | Python embarqué | 5 | M | P1, fait |
 | B3 | Rechargement à chaud des scripts | Python embarqué | 4 | S | P1 |
 | B4 | Vue numpy structurée d'une struct entière | Python embarqué | 4 | M | P2 |
 | B5 | Budget de temps par tick et profilage | Python embarqué | 4 | S | P2 |
@@ -231,7 +231,7 @@ embarqué compilé par MSVC, et vérifie qu'une référence rendue est une vue
 (`vue.__address__ == g_moteur.__address__`) ; `tests/test_pybind.py` couvre
 l'émission, les refus, les filtres et le stub sans compiler.
 
-#### B2. Vues Python sur `std::vector`, `std::string`, pointeur + taille · P1 · M
+#### B2. Vues Python sur `std::vector`, `std::string`, pointeur + taille · P1 · M · **fait**
 
 **Problème.** Les bindings écartent tout conteneur STL. Or en Python
 embarqué, même processus, un `std::vector<double>` est parfaitement lisible, et
@@ -249,6 +249,32 @@ souvent au cœur des interfaces (listes de waypoints, de capteurs).
 **Risque.** Une vue numpy gardée au-delà d'une réallocation du vector pointe
 dans le vide. Remède : ne jamais mettre en cache la vue, la reconstruire à
 chaque accès (coût ~100 ns), et le documenter.
+
+**Fait.** `Field.container` et `Field.elem` décrivent le conteneur et son
+élément. L'élément est lu sur le typedef `value_type` de la classe, et non
+deviné en découpant `<...>` : c'est le compilateur qui répond, allocateur et
+alias compris. Il est décrit **sans être placé** — un élément de vector n'a pas
+d'offset dans la structure, et en inventer un serait un mensonge.
+
+Le risque de vue pendante a été traité mieux que prévu pour le cas courant.
+`VectorView` garde le **conteneur**, pas ses octets, et redemande `data()` et
+`size()` à chaque indexation : un `push_back` du côté C++ ne laisse pas une vue
+pendante, ce que `tests/test_pybind_embed.py` vérifie en appelant une fonction
+C++ qui fait grandir le vector depuis le script, 40 fois, de quoi forcer des
+réallocations. Le remède du brainstorm reste en vigueur là où il est inévitable,
+les vues numpy et les spans, et c'est écrit dans le README.
+
+Deux refus explicites, chacun commenté dans le header généré :
+`std::vector<bool>`, spécialisation à champs de bits sans `data()`, et un
+`std::vector` const d'agrégats — il n'y a qu'une classe de vue par type
+d'élément, et la rendre laisserait écrire dedans. Le type C++ de la vue vient
+du membre lui-même (`decltype`), jamais d'une réécriture de `std::vector<...>` :
+une vue enregistrée pour un type voisin ne serait pas trouvée à l'exécution.
+
+Les paires pointeur + compteur passent par `[pybind] spans`, une déclaration et
+non une heuristique. Une déclaration qui ne désigne rien donne un commentaire,
+pas un C++ qui ne compile pas : une faute de frappe dans `scry.ini` ne doit pas
+casser le build de l'application.
 
 #### B3. Rechargement à chaud des scripts · P1 · S
 
