@@ -149,6 +149,10 @@ Rien de ce qui suit n'a été discuté. À trier avant toute spécification.
 
 ### Temps et sources multiples
 
+- **Mode réseau repris de SwitchSpy** (InterfaceInspector) : sockets TCP,
+  UDP et multicast, santé des liaisons, journal, mesures de performance, six
+  scénarios de test. Plan : [RAVEN_REPRISE_SWITCHSPY.md](RAVEN_REPRISE_SWITCHSPY.md).
+
 - **Plusieurs sources dans un même enregistrement** (SHM du simulateur et
   liaison série vers un équipement, par exemple), alignées sur une même base
   de temps.
