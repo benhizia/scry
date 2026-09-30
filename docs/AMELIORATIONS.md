@@ -13,19 +13,23 @@ connaît le code : **S** ≤ 2 j, **M** 3 à 5 j, **L** 1 à 3 semaines.
 
 ## 1. Résumé
 
-Scry fait aujourd'hui ce qu'il promet sous Linux : modèle fidèle au compilateur,
-vérification d'ABI, lecture live, Python embarqué sans copie, 266 tests. Trois
-faiblesses dominent :
+Scry fait aujourd'hui ce qu'il promet, sous Linux comme sous Windows : modèle
+fidèle au compilateur, vérification d'ABI, lecture live, Python embarqué sans
+copie, 291 tests. Trois faiblesses dominent :
 
-1. **Rien n'est validé automatiquement sur la vraie cible.** MSVC, le
-   visualiseur DirectX et les scripts `.bat` n'ont été compilés qu'avec mingw
-   ou pas du tout, et il n'y a aucune CI.
+1. **Rien n'est validé automatiquement sur la vraie cible.** MSVC et le
+   visualiseur DirectX ont depuis été rejoués à la main, sous `cl` et sous
+   Visual Studio, Scry comme RAVEN (voir A2) ; mais il n'y a toujours **aucune
+   CI**, donc rien qui empêche cette validation de se périmer au prochain
+   commit.
 2. **Le Python embarqué ne sait que lire et écrire des données.** Pas de
    fonctions exposées, pas de `std::vector`, pas de rechargement de script :
-   c'est là que se joue l'usage sur simulateur.
-3. **L'outil passe mal à l'échelle d'un vrai header tiers.** Pas de filtrage
-   des types dans les IHM, parsing à froid lent (9,3 s mesurées sur un header
-   qui tire la STL), code généré monolithique.
+   c'est là que se joue l'usage sur simulateur. Les deux premiers points sont
+   écrits et attendent leur relecture (B1 et B2, branches non fusionnées, voir
+   [PASSATION.md](PASSATION.md) § 3.4) ; le troisième, B3, reste à faire.
+3. **L'outil passe mal à l'échelle d'un vrai header tiers.** Le filtrage des
+   types est fait (C1, fusionné) ; restent un parsing à froid lent (9,3 s
+   mesurées sur un header qui tire la STL) et un code généré monolithique.
 
 **Les cinq pistes à lancer en premier** (détail dans les fiches) :
 
@@ -48,21 +52,21 @@ faiblesses dominent :
 | Modèle et parsing | corpus de 17 headers passé par castxml et g++, avec et sans membres non publics |
 | Garantie d'ABI | `static_assert` compilés par g++ ; `-D_GLIBCXX_DEBUG` détecté comme divergence |
 | C++ généré | compilé en `-Wall -Wextra -Werror`, exécuté en headless contre Dear ImGui |
-| Mémoire partagée | 300 lectures sous écriture continue, 0 copie déchirée (Python/Linux et C++/wine) |
+| Mémoire partagée | 300 lectures sous écriture continue, 0 copie déchirée (Python/Linux, et C++ nativement sous Windows) |
 | Python embarqué | hôte C++ + module généré, octets relus aux offsets du modèle ; démo CMake |
+| Cible Windows | suite Scry complète sous `cl` ; RAVEN construit et exécuté sous MSVC 19.44, trois suites CTest et 8 tests Python, sans un avertissement en `/W4` |
 | Performance Python | 60 ns (élément numpy) à 420 ns (écriture globale), ~4 µs par cycle type |
 
 ### Ce qui manque ou coince
 
 | Constat | Mesure ou source |
 |---|---|
-| MSVC jamais utilisé réellement | tout Windows validé par mingw/wine ; `scry verify` avec cl non rejoué depuis l'héritage |
-| Aucune CI | pas de dossier `.github/` |
+| Aucune CI | pas de dossier `.github/` : la validation Windows est manuelle, donc périssable |
+| Réseau éprouvé en boucle locale seulement | le multicast de RAVEN est passé par `127.0.0.1`, jamais par une carte physique : `IP_MULTICAST_IF` et le TTL restent à éprouver |
 | Parsing lent à froid | 9,3 s à froid, 0,49 s avec cache, sur `test_structs_complexe.h` |
 | Compilation des bindings lente | ~20 s pour un module pybind11 sur un seul header |
 | STL ignorée par les bindings | `std::vector`, `std::map`… : « non liée (STL, pas un POD) » |
 | Aucune fonction exposée | seuls types et variables passent en Python |
-| Pas de filtrage des types | tous les types des headers apparaissent dans les IHM |
 | Code mort | `SharedMemorySource` (`runtime/memory.py`) remplacé par `runtime/shm.py` |
 | Lint résiduel | `E741` (`O`) dans `codegen/pybind.py`, imports inutiles dans `autotest/` |
 | Gros modules | `parsing/introspect.py` 878 lignes, `codegen/pybind.py` 846 lignes |
@@ -84,7 +88,7 @@ faiblesses dominent :
 | ID | Piste | Axe | Valeur | Effort | Priorité |
 |---|---|---|---|---|---|
 | A1 | CI Linux + Windows/MSVC | Fiabilité | 5 | M | P1 |
-| A2 | Rejouer `scry verify` et la démo sous MSVC réel | Fiabilité | 5 | S | P1 |
+| A2 | Rejouer `scry verify` et la démo sous MSVC réel | Fiabilité | 5 | S | P1, fait |
 | A3 | Test d'ordre des champs de bits compilé et exécuté | Fiabilité | 3 | S | P2 |
 | A4 | Détection des conteneurs STL illisibles à distance | Fiabilité | 3 | S | P2 |
 | A5 | Offset des bases virtuelles sur l'objet complet | Fiabilité | 2 | M | P3 |
@@ -123,8 +127,11 @@ faiblesses dominent :
 
 #### A1. CI GitHub Actions Linux + Windows/MSVC · P1 · M
 
-**Problème.** Tout le chemin Windows a été validé par mingw et wine, jamais
-avec `cl.exe` ; aucune régression n'est détectée automatiquement.
+**Problème.** Le chemin Windows fonctionne sous `cl.exe`, mais seulement
+parce que quelqu'un l'a lancé à la main (A2). Aucune régression n'est détectée
+automatiquement : la prochaine divergence MSVC passera inaperçue jusqu'à ce que
+quelqu'un repense à rejouer la suite. C'est ce qui rend cette piste plus
+urgente depuis, et non moins.
 
 **Proposition.** Deux jobs :
 - `ubuntu-latest` : `pip install -e ".[dev]" castxml pybind11 numpy`, `ruff`,
@@ -142,14 +149,26 @@ fournit. Temps de CI : ~5 min Linux, ~10 min Windows, acceptable.
 
 **Réussite.** Un badge vert sur `main`, et une PR qui casse l'ABI échoue.
 
-#### A2. Rejouer `scry verify` et la démo sous MSVC réel · P1 · S
+#### A2. Rejouer `scry verify` et la démo sous MSVC réel · P1 · S · **fait**
 
-**Problème.** Deux points restent non vérifiés : `offsetof` sur membres hérités
-avec `cl` (repli prévu : `[codegen] abi_inherited = false`), et la démo
+**Problème.** Deux points restaient non vérifiés : `offsetof` sur membres
+hérités avec `cl` (repli prévu : `[codegen] abi_inherited = false`), et la démo
 `run_demo.bat` depuis le passage au module généré.
 
 **Proposition.** Session manuelle sur le poste Windows, puis intégrer les cas
 dans A1. Corriger ce qui casse.
+
+**Fait.** En deux temps. D'abord la chaîne d'outils de test elle-même, rendue
+indépendante du compilateur (`tests/toolchain.py`), ce qui a fait tomber les
+tests d'intégration sautés : la suite passe entière sous `cl`. Cela a révélé un
+vrai défaut, `apply_vcvars` empilant l'environnement à chaque appel jusqu'à ce
+qu'aucun sous-processus ne démarre. Ensuite RAVEN, construit et **exécuté** sous
+MSVC 19.44 : trois suites CTest, 8 tests Python, aucun avertissement en `/W4`,
+visualiseur DirectX compris. Détail et commandes dans
+[PASSATION.md](PASSATION.md) § 1.3.
+
+**Ce qui reste.** La validation est manuelle, donc périssable : c'est A1 qui la
+rendra durable. Et tout s'est joué en boucle locale, sur une seule machine.
 
 #### A3. Test d'ordre des champs de bits · P2 · S
 
@@ -464,13 +483,16 @@ leur API, quand une des pistes B1, B2 ou D1 les touchera.
 
 | Phase | Contenu | Durée indicative |
 |---|---|---|
-| **1. Fiabiliser** | A1, A2, F1, E1, C1 | 2 semaines |
-| **2. Piloter un simulateur** | B1, B2, B3, B5, B6 | 3 semaines |
+| **1. Fiabiliser** | A1, ~~A2~~, F1, E1, ~~C1~~ | 1 à 2 semaines |
+| **2. Piloter un simulateur** | ~~B1~~, ~~B2~~, B3, B5, B6 | 1 à 2 semaines |
 | **3. Exploiter les séances** | B7, B8, C2, C3, C4, E2, E4 | 4 à 6 semaines |
 | **4. Opportuniste** | A3, A4, A5, B4, B9, C5, C6, D1 à D4, E3, F2 | au fil des besoins |
 
-La phase 1 conditionne le reste : sans CI Windows, chaque nouvelle fonction
-ajoute du risque non mesuré sur la cible réelle.
+De la phase 1 il ne reste que **A1**, la CI, et c'est la pièce qui compte :
+A2 a montré que la cible Windows tient, mais rien ne le vérifiera plus si
+personne ne relance la suite à la main. De la phase 2, B1 et B2 sont écrites et
+attendent d'être fusionnées ; **B3**, le rechargement à chaud, est le prochain
+morceau.
 
 ---
 

@@ -83,7 +83,10 @@ ctest --test-dir build/raven
   s'en passer). Scry a besoin de castxml : dans le `PATH`, ou déclaré dans
   `[paths] castxml` de `scry.ini`.
 - Sous Visual Studio : ouvrir le dossier `raven` (CMake), ou
-  `cmake -S raven -B build/raven -G "Visual Studio 17 2022"`.
+  `cmake -S raven -B build/raven -G "Visual Studio 17 2022" -A x64`. Ajouter
+  `-DPython3_EXECUTABLE=<racine>/.venv/Scripts/python.exe` : `raven_mcast_tests`
+  fait appeler `scry raven` par CMake, et l'interpréteur système n'a ni
+  pygccxml ni castxml.
 
 ### Windows
 
@@ -95,7 +98,17 @@ fenêtres et le visualiseur au premier plan. `--no-view` s'arrête avant l'IHM.
 La chaîne est vérifiée automatiquement, sans IHM, par `tests/test_raven_e2e.py` :
 le simulateur publie, `raven` acquiert sans perte, enregistre sur ordre du
 protocole texte, et `raven-cat` relit le `.rvn`. Le test saute tant que les
-exécutables ne sont pas construits.
+exécutables ne sont pas construits. `RAVEN_BUILD_DIR` désigne un autre dossier
+de build que `build/raven`.
+
+**État sous MSVC, au 30 septembre 2026** (MSVC 19.44, Visual Studio 17 2022,
+x64) : tout construit sans un seul avertissement en `/W4`, visualiseur compris,
+et les trois suites CTest passent — `raven_tests`, `raven_net_tests` et
+`raven_mcast_tests` — plus les 8 tests Python de RAVEN. La couche réseau et
+l'écoute multicast ont donc tourné sur la cible réelle, mais **en boucle locale
+seulement** : `IP_MULTICAST_IF` sur une vraie carte et le TTL restent à
+éprouver. Détails et commandes dans [../docs/PASSATION.md](../docs/PASSATION.md)
+§ 1.3.
 
 Essai complet de la démo, dans trois terminaux :
 

@@ -1,11 +1,13 @@
 # Passation : où en est le projet, ce qui reste à faire
 
 > Rapport écrit pour reprendre le travail avec Claude Code en local. État au
-> 30 septembre 2026, `main` = `82a56e5` (PR 1 à 7 fusionnées).
+> 30 septembre 2026, `main` = `1a7d25a` (PR 1 à 8 fusionnées). La vérification
+> Windows que ce rapport demandait en premier a été faite en local le même
+> jour : voir § 1.3.
 
 ## 1. Où on en est
 
-### Scry (outil de build, Python)
+### 1.1 Scry (outil de build, Python)
 
 Fait et fusionné : parsing castxml + pygccxml, modèle plat, génération C++
 (`static_assert`, introspection), `scry verify` (cl, g++, clang++), héritage,
@@ -15,7 +17,7 @@ embarqué pour l'autotest, filtrage des types, et `scry raven` (descripteur
 `.rvndesc` et glue de publication, `--channel` pour une variable, `--struct`
 pour une struct transportée par le réseau).
 
-### RAVEN (acquisition, enregistrement, visualisation, C++)
+### 1.2 RAVEN (acquisition, enregistrement, visualisation, C++)
 
 | Brique | État | Où |
 |---|---|---|
@@ -30,10 +32,52 @@ Tests qui passent sous Linux : `raven_tests`, `raven_net_tests`,
 `raven_mcast_tests` (CTest), `tests/test_raven_gen.py`,
 `tests/test_raven_e2e.py`, et toute la suite Scry (`pytest`).
 
-**Jamais exécuté sous Windows depuis le cloud** : tout compile avec mingw,
-mais rien n'a tourné (pas de wine). C'est la première chose à vérifier en
-local : `cmake -S raven -B build/raven`, `cmake --build build/raven --config
-Release`, `ctest --test-dir build/raven -C Release`.
+### 1.3 Windows et MSVC : fait, et ce qui reste à éprouver
+
+Le cloud ne pouvait que compiler avec mingw, sans rien exécuter (pas de wine).
+C'était le premier point à vérifier en local. **Fait le 30 septembre 2026**,
+sans aucun écart à corriger :
+
+```
+MSVC 19.44.35216 · Visual Studio 17 2022 · x64 · Windows SDK 10.0.26100
+```
+
+| Vérification | Résultat |
+|---|---|
+| Construction | toutes les cibles, `raven-view` (Win32 + DirectX 11) et `demo_sim` comprises ; descripteurs des scénarios générés par `scry raven --struct` |
+| `raven_tests` | passé, 0,04 s |
+| `raven_net_tests` | passé, 1,14 s |
+| `raven_mcast_tests` | passé, 6,11 s |
+| `test_raven_e2e.py`, `test_raven_gen.py` | 8 tests passés, sur les binaires MSVC |
+| Avertissements | **aucun** en `/W4`, reconstruction propre, cœur et visualiseur (ImGui compris) |
+| Suite Scry complète | 291 tests passés sur ce `main` |
+
+Les commandes, avec les deux pièges du poste :
+
+```
+cmake -S raven -B build/raven-msvc -G "Visual Studio 17 2022" -A x64 ^
+      -DPython3_EXECUTABLE=<racine>/.venv/Scripts/python.exe
+cmake --build build/raven-msvc --config Release -- -m
+ctest --test-dir build/raven-msvc -C Release --output-on-failure
+set RAVEN_BUILD_DIR=<racine>\build\raven-msvc
+pytest tests/test_raven_e2e.py tests/test_raven_gen.py
+```
+
+- `Python3_EXECUTABLE` doit désigner le venv : `raven_mcast_tests` fait appeler
+  `scry raven` par CMake, ce qui demande pygccxml et castxml. Sans cela,
+  `find_package(Python3)` prend l'interpréteur système, qui ne les a pas.
+- `RAVEN_BUILD_DIR` sert à viser un dossier de build autre que `build/raven`.
+  `tests/test_raven_e2e.py` prend sinon le premier `build/raven*` qui contient
+  un `raven.exe` : garder un seul dossier de build complet évite de tester une
+  construction partielle par mégarde.
+
+**Ce que cela ne prouve pas.** Tout s'est joué en boucle locale, sur une seule
+machine : le multicast est passé par `127.0.0.1`, pas par une carte réseau ni
+un commutateur. Un `IP_MULTICAST_IF` sur la mauvaise interface, ou un TTL trop
+court, ne se verraient pas. Pour les couvrir il faut deux postes, ou au moins
+forcer l'interface sur la carte physique. À rejouer aussi après l'étape 3, qui
+ajoute des fils et une file SPSC : c'est là que Windows diverge le plus
+souvent.
 
 ## 2. InterfaceInspector : ce qui a été comparé, ce qui reste à reprendre
 
@@ -91,8 +135,11 @@ git worktree add ../switchspy origin/claude/describe-selected-011CUvmX5APbfMHaiM
 - Panneaux *Journal* et *Performances* dans `raven-view`.
 - Test : scénario 05 (écart de débit).
 
-**Étape 5 : build Windows.** Reprendre `CMakePresets.json`, `build.cmd` et
-`docs/BUILDING_WINDOWS.md` de SwitchSpy, adaptés aux cibles de RAVEN.
+**Étape 5 : build Windows.** Étape allégée : le générateur Visual Studio
+ordinaire suffit déjà, tout construit et tout passe (§ 1.3). Il ne reste que du
+confort : reprendre `CMakePresets.json`, `build.cmd` et
+`docs/BUILDING_WINDOWS.md` de SwitchSpy, adaptés aux cibles de RAVEN, pour
+n'avoir plus à passer `-DPython3_EXECUTABLE` à la main.
 
 **Étape 6 : rejeu vers le réseau.** Réémettre un `.rvn` sur le groupe
 multicast d'origine (`MulticastReplay`). Plus tard encore : table
@@ -129,11 +176,26 @@ Dans [RAVEN_CONTOUR.md](RAVEN_CONTOUR.md) :
 - Pointeurs suivis (struct de pointeurs) et champs de bits : non gérés dans
   le `.rvndesc`.
 - Relecture d'un `.rvn` dans `raven-view` et rejeu : absents.
-- Validation MSVC réelle de Scry et de RAVEN.
-- Deux branches de Scry **non fusionnées** : `feature/pybind-fonctions` (1
-  commit) et `feature/pybind-vues-stl` (2 commits). Toutes les autres
-  branches `claude/*` et `feature/*` sont fusionnées et peuvent être
-  supprimées.
+- Validation MSVC : **faite** pour RAVEN et pour Scry (§ 1.3), en boucle
+  locale seulement. Reste la CI, piste A1 d'[AMELIORATIONS.md](AMELIORATIONS.md) :
+  rien n'empêche aujourd'hui cette validation de se périmer au prochain commit.
+- Deux branches de Scry **non fusionnées**, à relire dans cet ordre, la
+  seconde étant bâtie sur la première :
+  - `feature/pybind-fonctions` (1 commit) : piste **B1**. Les fonctions libres
+    des headers et les méthodes publiques non virtuelles sont exposées en
+    Python embarqué (`register_functions`, méthodes sur le `py::class_` de leur
+    classe). Un script pilote au lieu de reposer des variables. Règle centrale :
+    seule une fonction **définie** dans le header est liée, sinon le module ne
+    se lierait pas ; un motif sans joker dans `[pybind] functions` vaut
+    autorisation explicite pour les autres.
+  - `feature/pybind-vues-stl` (2 commits) : piste **B2**. `std::vector` exposé
+    en vue numpy (éléments numériques) ou en `VectorView` (structures, enums,
+    chaînes), et paires pointeur + compteur déclarées dans `[pybind] spans`.
+    `VectorView` garde le conteneur et non ses octets : un `push_back` du côté
+    C++ ne laisse pas une vue pendante.
+  - 329 tests passent avec les deux, contre 291 sans.
+- Toutes les autres branches `claude/*` et `feature/*` sont fusionnées et
+  peuvent être supprimées.
 - La PR 1 d'InterfaceInspector (SwitchSpy) est toujours ouverte.
 
 ## 4. Documents de référence

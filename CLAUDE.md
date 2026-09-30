@@ -15,6 +15,10 @@
     et sont sautés sinon) ;
   - RAVEN : `cmake -S raven -B build/raven && cmake --build build/raven`, puis
     `ctest --test-dir build/raven`, et `pytest tests/test_raven_e2e.py`.
+    Sous Windows, ajouter `-G "Visual Studio 17 2022" -A x64` et
+    `-DPython3_EXECUTABLE=<racine>/.venv/Scripts/python.exe` : CMake fait
+    appeler `scry raven`, et l'interpréteur système n'a ni pygccxml ni castxml.
+    `--config Release` sur le build et `-C Release` sur ctest.
 - RAVEN est construit par plugins : une source (`ISource`, déclarée dans
   `raven/src/engine/sources.cpp`) ne fait que le transport ; le moteur
   (`Engine`) ne sait pas d'où viennent les trames. Garder cette séparation.
