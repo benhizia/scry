@@ -26,4 +26,7 @@
   il tue le shell qui l'exécute.
 - `scry raven --type` est pris par le filtrage des types : pour une struct
   comme canal, c'est `--struct`.
-- Travailler sur une branche, puis PR vers `main`.
+- Travailler sur une branche, puis PR vers `main`. **Partir de `main`** : c'est
+  la seule branche du dépôt, tout y est fusionné. La branche `raven`, qui
+  servait d'atelier long, a été supprimée le 1er octobre 2026 — son contenu est
+  dans `main` (PR 5 à 8).

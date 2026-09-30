@@ -202,9 +202,9 @@ Dans [RAVEN_CONTOUR.md](RAVEN_CONTOUR.md) :
     `VectorView` garde le conteneur et non ses octets : un `push_back` du côté
     C++ ne laisse pas une vue pendante.
   - La suite Scry compte 357 tests depuis, contre 291 avant.
-- Il ne reste donc **aucune branche en attente** : `main` porte tout, et les
-  branches `claude/*`, `feature/*` et `docs/*` du dépôt distant peuvent être
-  supprimées.
+- Il ne reste **aucune branche** : `main` porte tout. Les branches `claude/*`,
+  `feature/*`, `docs/*` et l'atelier `raven` ont été supprimées le 1er octobre
+  2026, toutes entièrement fusionnées. Repartir de `main`.
 - La PR 1 d'InterfaceInspector (SwitchSpy) est toujours ouverte.
 
 ## 4. Documents de référence
