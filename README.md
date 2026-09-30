@@ -676,6 +676,34 @@ le build de l'application.
   modification du C++ : `g = plan.gains` puis un `resize()` côté simulateur, et
   `g` pointe dans le vide.
 
+### Interdire l'écriture là où elle n'a rien à faire
+
+Par défaut, un script peut écrire n'importe quelle variable exposée, sorties du
+modèle de vol comprises, qu'il ne devrait qu'observer. Deux garde-fous :
+
+```ini
+[pybind]
+writable = sim::inputs::*; sim::Etat::consigne   ; tout le reste sans setter
+read_only = false                                 ; ou bien : rien du tout
+```
+
+```bash
+scry gen --pybind --read-only
+```
+
+La fermeture est réelle, pas cosmétique : plus de setter sur la propriété, et
+la **vue numpy d'un tableau est elle-même marquée non inscriptible** — sans
+quoi un script écrirait à travers elle malgré l'absence de setter, et la liste
+blanche ne vaudrait rien. En lecture seule complète, les vues de tableaux et de
+vecteurs perdent aussi `__setitem__`, car remplacer un élément entier est une
+écriture comme une autre.
+
+**Une limite à connaître : la granularité est le type et son membre, jamais un
+chemin.** Il n'y a qu'une classe Python par type C++, donc si `a` et `b` sont
+du même type, on ne peut pas rendre `a.x` inscriptible et `b.x` en lecture
+seule. En pratique on nomme des namespaces d'entrées (`sim::inputs::*`) ou des
+membres précis d'un type (`sim::Etat::consigne`), et cela suffit.
+
 Deux cas restent écartés, dits en commentaire : `std::vector<bool>`, qui est une
 spécialisation à champs de bits sans `data()`, et un `std::vector` **const**
 d'agrégats — il n'y a qu'une classe de vue par type d'élément, et la rendre

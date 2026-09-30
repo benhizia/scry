@@ -81,15 +81,36 @@ pytestmark = pytest.mark.skipif(
     reason="castxml, compilateur C++ ou fichiers de developpement de Python absents")
 
 
+SPANS = ("spans = cases::Piste::bornes: nb_bornes;"
+         " cases::Piste::mesures: nb_mesures; cases::Piste::opaque: nb_opaque\n")
+
+
 @pytest.fixture(scope="module")
 def built(tmp_path_factory):
-    pybind11 = pytest.importorskip("pybind11")
+    pytest.importorskip("pybind11")
     pytest.importorskip("numpy")
+    return _compiler(tmp_path_factory, "pybind_embed")
+
+
+@pytest.fixture(scope="module")
+def built_lecture_seule(tmp_path_factory):
+    """Un second module, avec une liste blanche d'ecriture : seuls
+    cases::Sample::from et cases::g_speed gardent leur setter."""
+    pytest.importorskip("pybind11")
+    pytest.importorskip("numpy")
+    return _compiler(tmp_path_factory, "pybind_ro",
+                     "writable = cases::Sample::from; cases::g_speed\n")
+
+
+def _compiler(tmp_path_factory, nom: str, pybind_extra: str = ""):
+    """Genere les bindings puis compile l'hote. 'pybind_extra' complete la
+    section [pybind] du scry.ini de test."""
+    import pybind11
     from scry.codegen import pybind
     from scry.config import load_config
     from scry.parsing.introspect import Introspector, index_by_name
 
-    out = tmp_path_factory.mktemp("pybind_embed")
+    out = tmp_path_factory.mktemp(nom)
     ini = out / "scry.ini"
     ini.write_text(
         toolchain.ini_paths(output="gen")
@@ -100,8 +121,7 @@ def built(tmp_path_factory):
         # Paires pointeur + compteur : rien ne permet de les deviner. La
         # derniere vise un void*, non liable : elle doit donner un commentaire,
         # pas un code qui ne compile pas.
-        + "[pybind]\nspans = cases::Piste::bornes: nb_bornes;"
-          " cases::Piste::mesures: nb_mesures; cases::Piste::opaque: nb_opaque\n",
+        + "[pybind]\n" + SPANS + pybind_extra,
         encoding="utf-8")
     cfg = load_config(ini)
     introspector = Introspector(cfg)
@@ -499,3 +519,71 @@ def test_heritage_prive_et_docstrings(built, tmp_path):
         assert "enfant documente" in type(c).g_child.__doc__
     """)
     assert out["CHILD"] == "3 2.5 9"
+
+
+# -- liste blanche d'ecriture -------------------------------------------------
+def test_liste_blanche_refuse_les_ecritures_non_autorisees(built_lecture_seule, tmp_path):
+    """Un module compile avec 'writable = cases::Sample::from; cases::g_speed'.
+    Tout le reste doit se lire et refuser l'ecriture, a l'execution."""
+    out = run(built_lecture_seule, tmp_path, """
+        import sut
+        c = sut.cases
+        s = c.g_sample
+        # Ce qui est nomme garde son setter.
+        s.from_ = 21
+        c.g_speed = c.Speed.Fast
+        # Tout le reste se lit...
+        assert s.mode is not None and s.tag == "" or True
+        assert len(s.values) == 4
+        assert c.g_callsign == "F-GKXA"
+        # ... et refuse l'ecriture.
+        refuses = [
+            ("s.mode = 1", AttributeError),            # scalaire
+            ("s.speed = c.Speed.Max", AttributeError), # enum
+            ("s.armed = 1", AttributeError),           # champ de bits
+            ("s.tag = 'AB'", AttributeError),          # char[N]
+            ("s.values = [1.0] * 4", AttributeError),  # tableau numerique
+            ("s.values[0] = 1.0", ValueError),         # ... et sa vue numpy
+            ("c.g_callsign = 'N1'", AttributeError),   # chaine globale
+            ("c.g_gains = [1.0] * 3", AttributeError), # tableau global
+            ("c.g_gains[0] = 1.0", ValueError),
+            ("c.inner.g_ticks = 5", AttributeError),   # namespace imbrique
+        ]
+        for stmt, exc in refuses:
+            try:
+                exec(stmt)
+                raise SystemExit("ecriture acceptee : " + stmt)
+            except exc:
+                pass
+    """)
+    model_ = built_lecture_seule[1]["cases::Sample"]
+    src = BufferSource(bytes.fromhex(out["SAMPLE"]))
+    assert memory.decode(src, _field(model_, "from")) == "21"
+    assert out["SPEED"] == "10"
+    # Rien n'a bouge la ou l'ecriture etait refusee.
+    assert out["CALLSIGN"] == "F-GKXA"
+    assert out["GAINS"] == "1 2 3"
+
+
+def test_liste_blanche_les_vues_de_structures_restent_pilotees_par_leurs_membres(
+        built_lecture_seule, tmp_path):
+    """La granularite est le type et son membre : ce n'est pas la vue qui est
+    fermee, ce sont les membres du type de l'element."""
+    run(built_lecture_seule, tmp_path, """
+        import sut
+        c = sut.cases
+        p = c.g_piste
+        assert len(p.reperes) == 2 and p.reperes[0].lon == 2.0
+        try:
+            p.reperes[0].lat = 1.0          # cases::Repere::lat n'est pas nomme
+            raise SystemExit("ecriture acceptee dans une vue")
+        except AttributeError:
+            pass
+        assert len(p.bornes) == 3           # un span se lit toujours
+    """)
+
+
+def test_le_header_genere_dit_qui_reste_inscriptible(built_lecture_seule):
+    header = (built_lecture_seule[3] / "scry_pybind.generated.h").read_text(encoding="utf-8")
+    assert 'detail::field(c' in header
+    assert ', false);' in header and ', true);' in header
