@@ -137,6 +137,32 @@ c'est ce que la sentinelle doit attraper.
   (`include/raven/source.h`). TCP, multicast et fichier s'y ajouteront sans
   toucher au moteur.
 
+## Écoute passive multicast
+
+Le plugin de source `mcast` fait de `raven` un abonné de plus sur un groupe
+multicast : il écoute à côté des vrais consommateurs, sans rien leur
+retirer. Chaque datagramme est un message d'un canal du descripteur.
+
+1. Décrire la struct transportée, comme canal (une struct, pas une variable) :
+   ```
+   scry raven -H telemetrie.h --struct TelemetryBroadcast --name telemetry -o gen
+   ```
+2. Lancer l'enregistreur sur le groupe :
+   ```
+   raven --desc gen/telemetry.rvndesc --source "mcast:239.1.1.1:5000@192.168.1.10#TelemetryBroadcast?seq=sequence"
+   ```
+   - `@iface` : interface qui rejoint le groupe (facultatif) ;
+   - `#canal` : struct transportée (facultatif s'il n'y a qu'un canal) ;
+   - `?seq=champ` : champ qui numérote les messages. Un saut est compté comme
+     perte ; sans lui, UDP ne dit rien de ce qui manque.
+3. `raven-view` et `raven-cat` s'utilisent comme avec la mémoire partagée.
+   Un datagramme d'une autre taille que la struct est écarté et compté.
+
+En réseau, chaque message produit un enregistrement dans le `.rvn` : l'état
+de tous les champs choisis à cet instant, et le canal mis à jour (colonne
+`channel` de `raven-cat`). Le format passe en version 2 pour porter ce canal ;
+les fichiers de version 1 se relisent toujours.
+
 ## Couche réseau (mode réseau, en cours)
 
 `include/raven/sockets.h` : `raven::net::TcpSocket`, `TcpListener`,

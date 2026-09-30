@@ -14,6 +14,9 @@ namespace raven {
 struct Frame {
     uint64_t no = 0;                 // numero de trame du producteur
     uint64_t t_ns = 0;               // horodatage du producteur
+    // -1 : trame complete, de descriptor.frame_size() octets (anneau SHM).
+    // >= 0 : message d'un seul canal, de la taille de ce canal (reseau).
+    int channel = -1;
     const unsigned char* data = nullptr;
     uint32_t size = 0;
 };
@@ -32,9 +35,11 @@ public:
     virtual const std::string& error() const = 0;       // "" si tout va bien
 };
 
-// Fabrique a partir d'une specification "type:parametres", "shm:demo" par
-// exemple. Renvoie nullptr si le type est inconnu. C'est ici qu'un nouveau
-// plugin (tcp, multicast, fichier) s'enregistre.
+// Fabrique a partir d'une specification "type:parametres". Renvoie nullptr
+// si le type est inconnu. Plugins disponibles (src/engine/sources.cpp) :
+//   shm:<nom>                                    anneau du simulateur
+//   mcast:<groupe>:<port>[@iface][#canal][?seq=champ]
+//                                                abonne multicast passif
 std::unique_ptr<ISource> make_source(const std::string& spec, const Descriptor& d);
 
 } // namespace raven

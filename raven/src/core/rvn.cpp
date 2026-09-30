@@ -12,7 +12,9 @@
 
 namespace raven {
 
-static const char kMagic[] = "RAVEN-RVN 1\n";
+static const char kMagic[] = "RAVEN-RVN 2\n";
+static const char kMagicV1[] = "RAVEN-RVN 1\n";
+static const uint32_t kHead = 24;
 
 bool RvnWriter::open(const std::string& path, const Descriptor& d,
                      const std::vector<FieldRef>& sel, const std::string& trigger,
@@ -24,7 +26,7 @@ bool RvnWriter::open(const std::string& path, const Descriptor& d,
     std::setvbuf(f_, nullptr, _IOFBF, 1 << 20);
     path_ = path;
     ranges_.clear();
-    record_size_ = 16;
+    record_size_ = kHead;
     std::string head = kMagic;
     head += d.text();
     for (const FieldRef& r : sel) {
@@ -42,12 +44,16 @@ bool RvnWriter::open(const std::string& path, const Descriptor& d,
     return true;
 }
 
-bool RvnWriter::write(uint64_t frame_no, uint64_t t_ns, const unsigned char* frame) {
+bool RvnWriter::write(uint64_t frame_no, uint64_t t_ns, const unsigned char* frame, int channel) {
     if (!f_) return false;
     unsigned char* p = buf_.data();
     std::memcpy(p, &frame_no, 8);
     std::memcpy(p + 8, &t_ns, 8);
-    p += 16;
+    const int32_t ch = channel;
+    const uint32_t reserved = 0;
+    std::memcpy(p + 16, &ch, 4);
+    std::memcpy(p + 20, &reserved, 4);
+    p += kHead;
     for (const Range& r : ranges_) {
         std::memcpy(p, frame + r.offset, r.size);
         p += r.size;
@@ -75,7 +81,10 @@ bool RvnReader::open(const std::string& path, std::string& error) {
     f_ = std::fopen(path.c_str(), "rb");
     if (!f_) { error = "impossible d'ouvrir " + path; return false; }
     std::string line, desc;
-    if (!read_line(f_, line) || line + "\n" != kMagic) { error = "pas un fichier .rvn"; return false; }
+    if (!read_line(f_, line)) { error = "pas un fichier .rvn"; return false; }
+    if (line + "\n" == kMagic) { version_ = 2; head_ = kHead; }
+    else if (line + "\n" == kMagicV1) { version_ = 1; head_ = 16; }
+    else { error = "pas un fichier .rvn"; return false; }
     while (read_line(f_, line)) {
         desc += line + "\n";
         if (line == "end") break;
@@ -96,7 +105,7 @@ bool RvnReader::open(const std::string& path, std::string& error) {
         }
     }
     if (line != "data") { error = "en-tete tronque"; return false; }
-    uint32_t pos = 16;
+    uint32_t pos = head_;
     for (const FieldRef& r : sel_) {
         field_pos_.push_back(pos);
         pos += desc_.field(r)->bytes();
@@ -116,6 +125,9 @@ bool RvnReader::read(uint64_t n, uint64_t& frame_no, uint64_t& t_ns,
     if (std::fread(buf_.data(), 1, record_size_, f_) != record_size_) return false;
     std::memcpy(&frame_no, buf_.data(), 8);
     std::memcpy(&t_ns, buf_.data() + 8, 8);
+    int32_t ch = -1;
+    if (head_ >= 24) std::memcpy(&ch, buf_.data() + 16, 4);
+    last_channel_ = ch;
     fields.clear();
     for (uint32_t p : field_pos_) fields.push_back(buf_.data() + p);
     return true;

@@ -93,6 +93,7 @@ private:
     std::map<FieldRef, Sentinel> sentinels_;
     std::deque<std::string> events_;             // messages 's' et 't' en attente
     uint64_t dropped_ = 0;
+    uint64_t malformed_ = 0;                     // trames de taille inattendue, ignorees
 };
 
 } // namespace raven

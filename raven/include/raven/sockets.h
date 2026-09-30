@@ -82,6 +82,9 @@ public:
     bool bind(const Endpoint& at);                     // port 0 : choisi par le systeme
     long send_to(const void* data, size_t size, const Endpoint& to);
     long recv_from(void* buf, size_t size, Endpoint& from, int timeout_ms);
+    // Tampon de reception du systeme : un abonne qui suit un flux rapide doit
+    // absorber les rafales pendant qu'il traite. false si refuse.
+    bool set_receive_buffer(int bytes);
     // Plus grande charge utile d'un datagramme sans fragmentation IP sur un
     // reseau Ethernet (MTU 1500 - 20 IP - 8 UDP).
     static constexpr size_t kSafePayload = 1472;

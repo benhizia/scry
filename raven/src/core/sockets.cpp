@@ -219,6 +219,11 @@ long UdpSocket::recv_from(void* buf, size_t size, Endpoint& from, int timeout_ms
     return n;
 }
 
+bool UdpSocket::set_receive_buffer(int bytes) {
+    return fd_ >= 0 && setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&bytes),
+                                  sizeof bytes) == 0;
+}
+
 // ------------------------------------------------------- MulticastSocket
 
 bool MulticastSocket::join(const Endpoint& group, const std::string& iface) {

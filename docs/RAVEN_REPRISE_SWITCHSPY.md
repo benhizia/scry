@@ -242,8 +242,22 @@ automatiquement**. On les reprend en tests CTest automatisés :
    utilitaires de plateforme (`src/core/net_platform.h`) ; leur fusion complète
    attendra que le protocole bouge.
 2. **Espion multicast** : `MulticastSource`, messages dans le `.rvn`, colonne
-   *direction* inutile ici ; scénarios 03 et 04 automatisés. C'est le plus
-   simple, sans transfert.
+   *direction* inutile ici ; scénarios 03 et 04 automatisés. **Fait** :
+   - plugin `mcast` (`src/engine/mcast_source.cpp`), déclaré dans un registre
+     de sources séparé (`src/engine/sources.cpp`). Le moteur reçoit des
+     messages d'un canal (`Frame::channel`) et ne sait pas d'où ils viennent ;
+   - `scry raven --struct` : un canal par struct, pour les messages ;
+   - `.rvn` en version 2 : chaque message donne un enregistrement de taille
+     fixe (état des champs choisis et canal mis à jour). Les enregistrements à
+     longueur variable prévus plus haut ne sont pas nécessaires tant qu'une
+     liaison transporte des structs de taille connue ; l'accès direct à la
+     n-ième trame est conservé ;
+   - scénarios 03 et 04 automatisés (`raven_mcast_tests`) : le vrai
+     consommateur reçoit tout, les pertes sont annoncées exactement, 50 000
+     messages à plus de 200 000 messages/s sans perte en boucle locale.
+   - Trouvaille : les `static_assert` des headers de ces scénarios étaient
+     faux sur x86-64 (44 et 72 octets annoncés, 48 et 64 réels) ; les headers
+     ne compilaient pas. Ils sont retirés, la taille vient de Scry.
 3. **Relais TCP et UDP** : `TcpRelay`, `UdpRelay`, file SPSC, `Direction`,
    `[link.x]` dans `raven.ini` ; scénarios 01, 02 et 06.
 4. **Santé, journal, performances** : `LinkHealth`, `log`, `perf`, panneaux

@@ -37,7 +37,8 @@ if(WIN32)
 endif()
 
 # Moteur de l'enregistreur, en bibliotheque pour les tests.
-add_library(raven_engine STATIC src/engine/engine.cpp src/engine/shm_source.cpp)
+add_library(raven_engine STATIC src/engine/engine.cpp src/engine/sources.cpp
+  src/engine/shm_source.cpp src/engine/mcast_source.cpp)
 target_include_directories(raven_engine PUBLIC src/engine)
 target_link_libraries(raven_engine PUBLIC raven_core Threads::Threads)
 if(UNIX AND NOT APPLE)
@@ -75,6 +76,30 @@ if(RAVEN_DEMO)
     DEPENDS demo/sim_state.h
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
     COMMENT "scry raven : glue de la demo")
+  # Ecoute passive multicast : descripteurs des scenarios 03 et 04 de SwitchSpy.
+  set(NET_GEN "${CMAKE_CURRENT_BINARY_DIR}/net_gen")
+  foreach(pair "03_multicast:TelemetryBroadcast:telemetry" "04_high_throughput:MarketTick:market")
+    string(REPLACE ":" ";" parts "${pair}")
+    list(GET parts 0 dir)
+    list(GET parts 1 type)
+    list(GET parts 2 name)
+    add_custom_command(
+      OUTPUT "${NET_GEN}/${name}.rvndesc"
+      COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/../src"
+              ${Python3_EXECUTABLE} -m scry raven
+              -H "${CMAKE_CURRENT_SOURCE_DIR}/tests/net/${dir}/shared.hpp"
+              --struct ${type} --name ${name} -o "${NET_GEN}"
+      DEPENDS tests/net/${dir}/shared.hpp
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+      COMMENT "scry raven : descripteur ${name}")
+  endforeach()
+  add_executable(raven_mcast_tests tests/test_mcast.cpp
+    "${NET_GEN}/telemetry.rvndesc" "${NET_GEN}/market.rvndesc")
+  target_include_directories(raven_mcast_tests PRIVATE tests)
+  target_link_libraries(raven_mcast_tests PRIVATE raven_engine)
+  add_test(NAME raven_mcast_tests
+           COMMAND raven_mcast_tests "${NET_GEN}/telemetry.rvndesc" "${NET_GEN}/market.rvndesc")
+
   add_executable(demo_sim demo/demo_sim.cpp "${DEMO_GEN}/raven_publish.gen.h")
   target_include_directories(demo_sim PRIVATE include "${DEMO_GEN}" demo)
   target_link_libraries(demo_sim PRIVATE Threads::Threads)

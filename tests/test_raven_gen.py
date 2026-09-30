@@ -46,3 +46,21 @@ def test_glue(variables, tmp_path):
     assert "static_assert(sizeof(g_sim) == 12" in glue
     assert "offsetof(decltype(g_sim), scenario) == 8" in glue
     assert "std::memcpy(f + 0, &g_sim, sizeof(g_sim));" in glue
+
+
+def test_struct_comme_canal(tmp_path):
+    """Mode reseau : un canal par struct (message), sans glue de publication."""
+    from scry.config import load_config
+    from scry.parsing.introspect import Introspector
+    header = os.path.join(os.path.dirname(__file__), "..", "raven", "tests", "net",
+                          "03_multicast", "shared.hpp")
+    it = Introspector(load_config())
+    structs = it.parse([header])
+    written = raven.generate(it.variables, [], str(tmp_path), "t", [header],
+                             structs=structs, type_names=["TelemetryBroadcast"])
+    assert len(written) == 1                                  # descripteur seul
+    text = open(written[0]).read()
+    assert "channel 0 0 48 13 TelemetryBroadcast" in text     # 48, et non 44
+    assert "field 1 -1 uint 8 8 1 -1 - sequence" in text
+    with pytest.raises(ValueError):
+        raven.select_types(structs, ["Absent"])
