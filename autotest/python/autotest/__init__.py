@@ -17,12 +17,14 @@ Le runtime est du Python pur : il se teste sans compiler, avec un faux 'sut'.
 """
 
 from autotest.expect import ExpectationError, check, expect
-from autotest.runner import (Runner, Scenario, ScenarioResult, ScenarioTimeout, UntilTimeout,
+from autotest.runner import (Runner, Scenario, ScenarioResult, ScenarioTimeout,
+                             TickBudgetExceeded, TickStats, UntilTimeout,
                              cycles, record, scenario, until)
 from autotest.snapshot import diff, snapshot
 
 __all__ = [
     "Runner", "Scenario", "ScenarioResult", "ScenarioTimeout", "UntilTimeout",
+    "TickBudgetExceeded", "TickStats",
     "scenario", "cycles", "until", "record",
     "expect", "check", "ExpectationError",
     "snapshot", "diff",

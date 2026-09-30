@@ -5,13 +5,14 @@ l'etape autotest (runner.tick()). C'est exactement l'ordre de l'appli reelle.
 """
 
 import os
+import time
 import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
 import pytest
 
-from autotest import (Runner, ScenarioTimeout, check, cycles, diff, expect, record,
-                      scenario, snapshot, until)
+from autotest import (Runner, ScenarioTimeout, TickStats, check, cycles, diff, expect,
+                      record, scenario, snapshot, until)
 
 
 def _sut():
@@ -359,3 +360,126 @@ def test_le_rapport_est_reecrit_a_chaque_passe(tmp_path):
     root = ET.parse(rapport).getroot()
     assert root.get("tests") == "2"
     assert sorted(c.get("name") for c in root.findall("testcase")) == ["autre", "essai"]
+
+
+# -- budget de temps par tick ------------------------------------------------
+def test_histogramme_moyenne_et_pire_cas():
+    stats = TickStats()
+    for ms, cycle in [(0.05, 1), (0.3, 2), (0.3, 3), (7.0, 4), (120.0, 5), (0.05, 6)]:
+        stats.add(ms, cycle)
+    assert stats.count == 6
+    assert (stats.worst_ms, stats.worst_cycle) == (120.0, 5)
+    assert stats.mean_ms == pytest.approx(sum([0.05, 0.3, 0.3, 7.0, 120.0, 0.05]) / 6)
+    # Seules les tranches non vides sortent, et une valeur hors des bornes
+    # tombe dans la derniere.
+    assert stats.histogram() == [("0.00-0.10 ms", 2), ("0.25-0.50 ms", 2),
+                                 ("5.00-10.00 ms", 1), (">= 50.00 ms", 1)]
+    assert "pire 120.000 ms au cycle 5" in stats.summary()
+    assert TickStats().summary() == "aucun tick mesure"
+
+
+def test_les_ticks_sont_mesures_sans_budget():
+    """L'histogramme ne depend pas du budget : il dit ou part le temps, meme
+    quand personne n'a fixe de limite."""
+    @scenario
+    async def court(sut):
+        await cycles(3)
+
+    r = _run([court])
+    stats = r.results[0].ticks
+    assert stats.count == r.results[0].cycles
+    assert stats.worst_ms > 0.0 and stats.mean_ms > 0.0
+
+
+def test_depassement_compte_et_impute_au_bon_scenario():
+    @scenario
+    async def lent(sut):
+        time.sleep(0.01)          # 10 ms, bien au-dela du budget
+        await cycles(1)
+
+    @scenario
+    async def rapide(sut):
+        await cycles(1)
+
+    r = _run([lent, rapide], tick_budget_ms=1.0)
+    lent_res, rapide_res = r.results
+    assert lent_res.slow_ticks >= 1 and lent_res.ticks.worst_ms > 5.0
+    # Le scenario suivant n'herite pas du cout du precedent.
+    assert rapide_res.slow_ticks == 0
+
+
+def test_profil_du_tick_qui_suit_le_depassement():
+    """On ne peut pas profiler le passe : c'est le tick suivant qui est
+    echantillonne, et il execute le meme code."""
+    @scenario
+    async def lent(sut):
+        for _ in range(4):
+            _brule(0.01)
+            await cycles(1)
+
+    r = _run([lent], tick_budget_ms=1.0, profile_slow=True)
+    profil = r.results[0].profile
+    assert profil and "tick de " in profil
+    assert "_brule" in profil                      # la fonction coupable est nommee
+    assert r.results[0].slow_ticks >= 2
+
+
+def test_pas_de_profil_sans_l_option():
+    @scenario
+    async def lent(sut):
+        _brule(0.01)
+        await cycles(1)
+
+    assert _run([lent], tick_budget_ms=1.0).results[0].profile == ""
+
+
+def test_max_slow_ticks_coupe_le_scenario():
+    @scenario
+    async def gourmand(sut):
+        for _ in range(100):
+            _brule(0.01)
+            await cycles(1)
+
+    r = _run([gourmand], tick_budget_ms=1.0, max_slow_ticks=3)
+    result = r.results[0]
+    assert result.status == "failed"
+    assert "au-dela de 1.000 ms" in result.message
+    # Coupe bien avant les 100 cycles demandes.
+    assert result.cycles < 20
+
+
+def test_un_scenario_dans_le_budget_n_est_pas_coupe():
+    @scenario
+    async def sobre(sut):
+        await cycles(5)
+
+    r = _run([sobre], tick_budget_ms=50.0, max_slow_ticks=1)
+    assert [x.status for x in r.results] == ["passed"]
+    assert r.results[0].slow_ticks == 0
+
+
+def test_rapport_porte_l_histogramme_et_le_profil(tmp_path):
+    @scenario
+    async def lent(sut):
+        for _ in range(3):
+            _brule(0.01)
+            await cycles(1)
+
+    path = tmp_path / "rapport.xml"
+    _run([lent], report=str(path), tick_budget_ms=1.0, profile_slow=True)
+    case = ET.parse(path).getroot().find("testcase[@name='lent']")
+    noms = {p.get("name") for p in case.findall("properties/property")}
+    assert {"tick_mean_ms", "tick_worst_ms", "tick_worst_cycle", "slow_ticks"} <= noms
+    sortie = case.find("system-out").text
+    assert "Duree des ticks" in sortie and "ms " in sortie
+    assert "Profil du tick qui suit le premier depassement" in sortie
+
+
+def _brule(secondes: float):
+    """Occupe le processeur, plutot que de dormir : un sleep ne se verrait pas
+    dans un profil, et ce sont des calculs que l'on veut attraper."""
+    fin = time.perf_counter() + secondes
+    total = 0.0
+    while time.perf_counter() < fin:
+        total += 1.0
+    return total

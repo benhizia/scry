@@ -99,6 +99,10 @@ class UntilTimeout(AssertionError):
     pass
 
 
+class TickBudgetExceeded(AssertionError):
+    """Trop de ticks au-dela du budget : le scenario est coupe."""
+
+
 class ScenarioTimeout(AssertionError):
     pass
 
@@ -143,6 +147,73 @@ def record(name: str, getter: Callable) -> Trace:
 
 
 # ---------------------------------------------------------------------------
+# Temps passe dans les ticks
+# ---------------------------------------------------------------------------
+class TickStats(object):
+    """Duree des ticks d'un scenario : histogramme, moyenne, pire cas.
+
+    Un histogramme a bornes fixes, et non la liste des durees : un scenario de
+    cent mille cycles ne doit pas peser des centaines de kilooctets de mesures
+    dans un processus qui tourne en temps reel. Les bornes sont en
+    millisecondes, choisies pour un cycle de 20 ms : ce qui compte est de
+    distinguer « invisible » de « commence a mordre » et de « hors budget ».
+    """
+
+    EDGES = (0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0)
+
+    def __init__(self):
+        self.count = 0
+        self.total_ms = 0.0
+        self.worst_ms = 0.0
+        self.worst_cycle = 0
+        self.buckets = [0] * (len(self.EDGES) + 1)
+
+    def add(self, ms: float, cycle: int):
+        self.count += 1
+        self.total_ms += ms
+        if ms > self.worst_ms:
+            self.worst_ms = ms
+            self.worst_cycle = cycle
+        for i, edge in enumerate(self.EDGES):
+            if ms < edge:
+                self.buckets[i] += 1
+                return
+        self.buckets[-1] += 1
+
+    @property
+    def mean_ms(self) -> float:
+        return self.total_ms / self.count if self.count else 0.0
+
+    def histogram(self) -> List[tuple]:
+        """(libelle, compte) des tranches non vides."""
+        out = []
+        low = 0.0
+        for i, edge in enumerate(self.EDGES):
+            if self.buckets[i]:
+                out.append(("%.2f-%.2f ms" % (low, edge), self.buckets[i]))
+            low = edge
+        if self.buckets[-1]:
+            out.append((">= %.2f ms" % self.EDGES[-1], self.buckets[-1]))
+        return out
+
+    def summary(self) -> str:
+        if not self.count:
+            return "aucun tick mesure"
+        return ("%d ticks, moyenne %.3f ms, pire %.3f ms au cycle %d"
+                % (self.count, self.mean_ms, self.worst_ms, self.worst_cycle))
+
+
+def _profile_text(profiler, lines: int = 12) -> str:
+    """Les fonctions les plus couteuses du tick profile, en texte."""
+    import io
+    import pstats
+    buffer = io.StringIO()
+    stats = pstats.Stats(profiler, stream=buffer)
+    stats.sort_stats("tottime").print_stats(lines)
+    return buffer.getvalue().strip()
+
+
+# ---------------------------------------------------------------------------
 # Resultats
 # ---------------------------------------------------------------------------
 class ScenarioResult(object):
@@ -157,6 +228,9 @@ class ScenarioResult(object):
         self.cycles = 0
         self.seconds = 0.0
         self.slow_ticks = 0
+        self.ticks = TickStats()
+        # Profil du premier tick survenu APRES un depassement, vide sinon.
+        self.profile = ""
         self.traces = {}            # type: Dict[str, Trace]
 
     @property
@@ -189,7 +263,8 @@ class Runner(object):
     def __init__(self, scenarios="scenarios", sut=None, report: Optional[str] = None,
                  select: Optional[str] = None, tick_budget_ms: float = 0.0,
                  stop_on_failure: bool = False, sut_module: str = "sut", log=print,
-                 watch: bool = False, watch_every: int = 25):
+                 watch: bool = False, watch_every: int = 25,
+                 profile_slow: bool = False, max_slow_ticks: int = 0):
         self._source = scenarios
         self._select = select
         self.sut = sut
@@ -197,6 +272,13 @@ class Runner(object):
         self.report = report
         self.tick_budget_ms = float(tick_budget_ms or 0.0)
         self.stop_on_failure = stop_on_failure
+        # Sur depassement du budget, echantillonner le tick SUIVANT avec
+        # cProfile : on ne peut pas profiler le passe, et le tick suivant
+        # execute presque toujours le meme code que le fautif.
+        self.profile_slow = bool(profile_slow)
+        # Couper un scenario apres N ticks hors budget, 0 pour ne jamais couper.
+        self.max_slow_ticks = int(max_slow_ticks or 0)
+        self._profile_next = False
         self.log = log
         self.cycle = 0
         self.results = []           # type: List[ScenarioResult]
@@ -290,6 +372,7 @@ class Runner(object):
         self.results = []
         self.finished = False
         self._closed = False
+        self._profile_next = False
         self.passes += 1
         self.log("[autotest] passe %d : %d scenario(s) recharge(s)"
                  % (self.passes, len(self._pending)))
@@ -320,20 +403,71 @@ class Runner(object):
             self._poll()
         if self.finished:
             return bool(self.watch)
+        run = self._current
+        profiler = self._arm_profiler()
         start = time.perf_counter()
         _ACTIVE = self
         try:
             self._step()
         finally:
             _ACTIVE = None
-        if self.tick_budget_ms:
             elapsed = (time.perf_counter() - start) * 1000.0
-            if elapsed > self.tick_budget_ms and self._current is not None:
-                self._current.result.slow_ticks += 1
+            if profiler is not None:
+                self._collect_profile(profiler, run, elapsed)
+        # Le tick est impute au scenario qui tournait a son debut : celui qui
+        # vient de finir a bien consomme ce temps, et un scenario qui demarre
+        # n'a pas a heriter du cout du precedent.
+        target = run if run is not None else self._current
+        if target is not None:
+            target.result.ticks.add(elapsed, self.cycle)
+            if self.tick_budget_ms and elapsed > self.tick_budget_ms:
+                self._over_budget(target)
         if self.finished:
             self._close()
             return bool(self.watch)
         return True
+
+    # -- budget de temps ------------------------------------------------------
+    def _arm_profiler(self):
+        """cProfile actif pour ce tick, ou None. Armé par un depassement au
+        tick precedent, et une seule fois par scenario."""
+        if not self._profile_next:
+            return None
+        self._profile_next = False
+        try:
+            import cProfile
+            profiler = cProfile.Profile()
+            profiler.enable()
+            return profiler
+        except Exception:
+            # Un profileur deja actif dans l'application, par exemple : on
+            # renonce a l'echantillon plutot que de perturber le cycle.
+            return None
+
+    def _collect_profile(self, profiler, run, elapsed: float):
+        try:
+            profiler.disable()
+        except Exception:
+            return
+        target = run if run is not None else self._current
+        if target is None or target.result.profile:
+            return
+        try:
+            target.result.profile = ("tick de %.3f ms au cycle %d\n\n%s"
+                                     % (elapsed, self.cycle, _profile_text(profiler)))
+        except Exception as exc:
+            target.result.profile = "profil indisponible : %s" % exc
+
+    def _over_budget(self, run: _Run):
+        result = run.result
+        result.slow_ticks += 1
+        if self.profile_slow and not result.profile:
+            self._profile_next = True
+        if (self.max_slow_ticks and result.slow_ticks >= self.max_slow_ticks
+                and run is self._current and run.coro is not None):
+            self._throw(run, TickBudgetExceeded(
+                "%d tick(s) au-dela de %.3f ms, pire %.3f ms"
+                % (result.slow_ticks, self.tick_budget_ms, result.ticks.worst_ms)))
 
     def run_all(self, app_cycle: Callable[[], None] = None, max_cycles: int = 1000000) -> int:
         """Boucle de commodite hors application : app_cycle() puis tick()."""
@@ -453,6 +587,16 @@ class Runner(object):
                     (" : " + result.message) if result.message else ""))
         for message in result.checks_failed:
             self.log("[autotest]        - %s" % message)
+        if result.slow_ticks:
+            self.log("[autotest]        budget : %d tick(s) au-dela de %.3f ms ; %s"
+                     % (result.slow_ticks, self.tick_budget_ms, result.ticks.summary()))
+            for label, count in result.ticks.histogram():
+                self.log("[autotest]          %-14s %d" % (label, count))
+            if result.profile:
+                self.log("[autotest]        profil du tick suivant :")
+                for line in result.profile.splitlines():
+                    self.log("[autotest]          %s" % line)
+        self._profile_next = False
         if not result.ok and self.stop_on_failure:
             self._pending.clear()
 

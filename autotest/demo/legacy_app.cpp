@@ -78,6 +78,9 @@ int main(int argc, char** argv)
     cfg.paths = {L"" AUTOTEST_PYTHON_DIR};
     cfg.scenarios = AUTOTEST_SCENARIOS_DIR;
     cfg.tick_budget_ms = 5.0;
+    // Sans cout quand rien ne deborde : le profil ne se declenche qu'apres un
+    // depassement, et une seule fois par scenario.
+    cfg.profile_slow = true;
     // '--watch' : mise au point. L'application ne s'arrete plus, les scenarios
     // rejouent a chaque enregistrement d'un fichier. Tout autre argument est un
     // filtre sur le nom ou les tags des scenarios.

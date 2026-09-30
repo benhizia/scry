@@ -66,8 +66,17 @@ struct HostConfig
     // Filtre sur le nom ou les tags des scenarios, vide pour tout lancer.
     std::string select;
     // Duree maximale d'un tick en millisecondes, 0 pour ne pas surveiller.
-    // Un tick plus long est compte dans le rapport (slow_ticks).
+    // Un tick plus long est compte dans le rapport (slow_ticks), qui porte de
+    // toute facon l'histogramme des durees et le pire cas.
     double tick_budget_ms = 0.0;
+    // Sur depassement, echantillonner le tick SUIVANT avec cProfile et joindre
+    // les fonctions les plus couteuses au rapport. Une fois par scenario. On ne
+    // peut pas profiler le passe ; le tick suivant execute presque toujours le
+    // meme code que le fautif.
+    bool profile_slow = false;
+    // Couper un scenario apres N ticks hors budget, 0 pour ne jamais couper.
+    // Un scenario qui decale le cycle a chaque tour ne sert plus a rien.
+    int max_slow_ticks = 0;
     // Arreter les scenarios au premier echec.
     bool stop_on_failure = false;
     // Veille : au lieu de se declarer termine, l'autotest surveille la date des
@@ -111,7 +120,9 @@ public:
             cfg.scenarios, py::arg("report") = report, py::arg("select") = select,
             py::arg("tick_budget_ms") = cfg.tick_budget_ms,
             py::arg("stop_on_failure") = cfg.stop_on_failure,
-            py::arg("watch") = cfg.watch, py::arg("watch_every") = cfg.watch_every);
+            py::arg("watch") = cfg.watch, py::arg("watch_every") = cfg.watch_every,
+            py::arg("profile_slow") = cfg.profile_slow,
+            py::arg("max_slow_ticks") = cfg.max_slow_ticks);
     }
 
     ~Host()
