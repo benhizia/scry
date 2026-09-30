@@ -177,6 +177,20 @@ hide =
 ;   functions = sim::*; sim::compute_trim
 functions =
 hide_functions =
+; Liste blanche d'ecriture : tout le reste est genere SANS setter. Motifs glob
+; sur le nom qualifie d'une variable globale, ou sur 'Classe::membre'. Vide =
+; tout est inscriptible. Un motif sans joker autorise aussi ce qu'il contient,
+; comme partout ailleurs dans Scry.
+;
+; La granularite est le TYPE et son membre, jamais un chemin : il n'y a qu'une
+; classe Python par type C++. On ne peut donc pas rendre 'a.x' inscriptible et
+; 'b.x' en lecture seule quand a et b sont du meme type.
+;   writable = sim::inputs::*; sim::Etat::consigne
+writable =
+; Aucun setter nulle part : pour un script qui observe sans agir. L'emporte sur
+; writable. 'scry gen --pybind --read-only' fait la meme chose sans toucher
+; a ce fichier.
+read_only = false
 ; Paires pointeur + compteur, exposees comme des sequences. Format
 ; 'classe::pointeur: compteur', le compteur etant membre de la meme classe.
 ; Rien ne permet de deviner qu'un pointeur et un entier voisins vont ensemble,

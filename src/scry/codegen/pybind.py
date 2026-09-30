@@ -83,6 +83,10 @@ def py_type_name(last: str) -> str:
     return py_identifier(base.strip()) + "_" + "_".join(n for n in names if n)
 
 
+def _cbool(value) -> str:
+    return "true" if value else "false"
+
+
 def _cstr(text: str) -> str:
     """Litteral C++ d'une ligne : guillemets et antislashs echappes."""
     return " ".join(str(text).split()).replace("\\", "\\\\").replace('"', '\\"')
@@ -243,7 +247,8 @@ class Binder(object):
     def __init__(self, structs: Sequence[model.Struct],
                  variables: Sequence[model.Variable] = (),
                  functions: Sequence[BoundFunction] = (),
-                 spans: Optional[Dict[Tuple[str, str], str]] = None):
+                 spans: Optional[Dict[Tuple[str, str], str]] = None,
+                 writable: Sequence[str] = (), read_only: bool = False):
         self.types = []               # type: List[BoundType]
         self.by_key = {}              # type: Dict[str, BoundType]
         self.enums = []               # type: List[BoundEnum]
@@ -256,6 +261,11 @@ class Binder(object):
         # l'on peut rendre : un vector const d'agregats n'est pas exposable.
         self.vectors = {}             # type: Dict[Tuple[str, bool], Dict]
         self.spans = dict(spans or {})
+        # Liste blanche d'ecriture. Vide : tout est inscriptible, comme avant.
+        # read_only l'emporte et ferme tout : c'est le mode des scripts qui
+        # observent sans agir.
+        self.writable = [p for p in writable if p and p.strip()]
+        self.read_only = bool(read_only)
         self.globals = [BoundGlobal(v) for v in variables]   # type: List[BoundGlobal]
         self.functions = list(functions)   # type: List[BoundFunction]
         for s in structs:
@@ -628,16 +638,15 @@ class Binder(object):
         """
         f, name = g.var.field, g.py_name
         ref = "[]() -> auto& { return %s; }" % g.expr
-        call = 'globals.%s("%s", "%s", %s);'
         ns = g.namespace
-
         doc = getattr(f, "doc", "")
+        writable = _cbool(self.can_write(g.var.qualified_name))
 
         def line(method):
-            text = call % (method, ns, name, ref)
+            text = 'globals.%s("%s", "%s", %s, %s' % (method, ns, name, ref, writable)
             if doc:
-                text = text[:-2] + ', "%s");' % _cstr(doc)
-            return text
+                text += ', "%s"' % _cstr(doc)
+            return text + ");"
 
         if f.kind in (model.FUNDAMENTAL, model.ENUM):
             hint = (self.enum_by_key[f.enum_type].py_path
@@ -883,6 +892,24 @@ class Binder(object):
         lines.append('def %s(%s) -> "%s": ...' % (bf.py_name, ", ".join(params), ret))
         return "\n".join(lines)
 
+    def can_write(self, qualified: str) -> bool:
+        """Ce nom qualifie recoit-il un setter ?
+
+        'sim::Etat::mode' pour un membre, 'sim::g_etat' pour une variable
+        globale. Les memes motifs glob que partout ailleurs dans Scry, et la
+        meme regle du motif sans joker : 'sim::inputs' autorise aussi
+        'sim::inputs::commande'.
+
+        La granularite est le TYPE et son membre, jamais un chemin : il n'y a
+        qu'un py::class_ par type. On ne peut donc pas rendre 'a.x'
+        inscriptible et 'b.x' en lecture seule quand a et b sont du meme type.
+        """
+        if self.read_only:
+            return False
+        if not self.writable:
+            return True
+        return model.matches_type(qualified, self.writable)
+
     def _hint_for_type(self, key: str) -> str:
         t = self.by_key.get(key)
         return t.py_path if t is not None else "object"
@@ -917,9 +944,14 @@ class Binder(object):
 
     def _member(self, t, f, O, c, name, py, flattened):
         """(ligne C++, indication de type Python), ou (None, raison)."""
-        scalar_prop = ('%s.def_property("%s", [](const %s& o) { return o.%s; }, '
-                       '[](%s& o, decltype(%s::%s) v) { o.%s = v; });'
-                       % (c, py, O, name, O, O, name, name))
+        w = self.can_write("%s::%s" % (t.qualified or t.key, name))
+        if w:
+            scalar_prop = ('%s.def_property("%s", [](const %s& o) { return o.%s; }, '
+                           '[](%s& o, decltype(%s::%s) v) { o.%s = v; });'
+                           % (c, py, O, name, O, O, name, name))
+        else:
+            scalar_prop = ('%s.def_property_readonly("%s", [](const %s& o) { return o.%s; });'
+                           % (c, py, O, name))
         if f.is_bitfield:
             return scalar_prop, _scalar_hint(f.type_name, f.size)
         if f.kind in (model.FUNDAMENTAL, model.ENUM):
@@ -928,7 +960,8 @@ class Binder(object):
                     else _scalar_hint(f.type_name, f.size))
             if flattened:
                 return scalar_prop, hint
-            return 'detail::field(%s, "%s", &%s::%s);' % (c, py, O, name), hint
+            return ('detail::field(%s, "%s", &%s::%s, %s);'
+                    % (c, py, O, name, _cbool(w)), hint)
         if f.kind == model.POINTER:
             span = self._span_info.get((t.qualified or t.key, name))
             if span is not None and not span["reason"]:
@@ -944,15 +977,16 @@ class Binder(object):
                 rec = self.vectors.get((q, bool(f.is_const)), {})
                 if rec.get("reason") or not rec:
                     return None, rec.get("reason", "std::vector non decrit")
+                ligne = ('detail::vector_member(%s, "%s", &%s::%s, %s);'
+                         % (c, py, O, name, _cbool(w)))
                 if rec["mode"] == "numeric":
-                    return ('detail::vector_member(%s, "%s", &%s::%s);' % (c, py, O, name),
-                            "numpy.ndarray")
-                return ('detail::vector_member(%s, "%s", &%s::%s);' % (c, py, O, name),
-                        "VectorView[%s]" % rec["hint"])
+                    return ligne, "numpy.ndarray"
+                return ligne, "VectorView[%s]" % rec["hint"]
             if _is_std_string(q):
-                return 'detail::field(%s, "%s", &%s::%s);' % (c, py, O, name), "str"
+                return ('detail::field(%s, "%s", &%s::%s, %s);'
+                        % (c, py, O, name, _cbool(w)), "str")
             if q.startswith("std::array<"):
-                return self._std_array_member(f, O, c, name, py)
+                return self._std_array_member(f, O, c, name, py, w)
             if _is_std(q):
                 return None, "%s non liee (STL, pas un POD)" % q.split("<")[0]
             key = q or "%s.%s" % (t.key, name)
@@ -960,11 +994,15 @@ class Binder(object):
                 return ('%s.def_property_readonly("%s", py::cpp_function([](%s& o) -> auto& '
                         '{ return o.%s; }, py::return_value_policy::reference_internal));'
                         % (c, py, O, name), self._hint_for_type(key))
-            return 'detail::field(%s, "%s", &%s::%s);' % (c, py, O, name), \
-                self._hint_for_type(key)
+            # Une structure imbriquee reste une VUE : c'est l'ecriture de ses
+            # propres membres que la liste blanche gouverne, chacun chez lui.
+            # 'w' ne decide ici que d'une affectation en bloc, obj.sous = autre.
+            return ('detail::field(%s, "%s", &%s::%s, %s);'
+                    % (c, py, O, name, _cbool(w)), self._hint_for_type(key))
         return None, "type non gere (%s)" % f.type_name
 
     def _array(self, t, f, O, c, name, py):
+        w = self.can_write("%s::%s" % (t.qualified or t.key, name))
         if f.children:
             elem = f.children[0]
             key = (elem.qualified_type if elem.qualified_type and not _is_std(elem.qualified_type)
@@ -977,17 +1015,29 @@ class Binder(object):
         elem_size = (f.size // f.array_len) if (f.size and f.array_len and not multi) else None
         canon = model.canonical_type(base, elem_size)
         if canon in CHAR_TYPES and not multi:
+            if not w:
+                return ('%s.def_property_readonly("%s", [](const %s& o) { '
+                        'return detail::char_get(o.%s); });' % (c, py, O, name), "str")
             return ('%s.def_property("%s", [](const %s& o) { return detail::char_get(o.%s); }, '
                     '[](%s& o, const std::string& s) { detail::char_set(o.%s, s, "%s"); });'
                     % (c, py, O, name, O, name, name), "str")
         if canon in model.PRINTF_FORMATS:
-            return ('%s.def_property("%s", [](py::object self) { return detail::numeric_view('
-                    'self, self.cast<%s&>().%s); }, [](%s& o, py::object v) { '
-                    'detail::numeric_assign(o.%s, v); });' % (c, py, O, name, O, name),
-                    "numpy.ndarray")
+            return self._numeric_array(O, c, name, py, w), "numpy.ndarray"
         return None, "tableau de %s non gere" % (f.elem_type or "?")
 
-    def _std_array_member(self, f, O, c, name, py):
+    @staticmethod
+    def _numeric_array(alias, c, name, py, writable: bool) -> str:
+        """Vue numpy d'un tableau. En lecture seule, la vue elle-meme n'est pas
+        inscriptible : sans cela, un script ecrirait a travers elle malgre
+        l'absence de setter."""
+        lire = ('[](py::object self) { return detail::numeric_view('
+                'self, self.cast<%s&>().%s, %s); }' % (alias, name, _cbool(writable)))
+        if not writable:
+            return '%s.def_property_readonly("%s", %s);' % (c, py, lire)
+        return ('%s.def_property("%s", %s, [](%s& o, py::object v) { '
+                'detail::numeric_assign(o.%s, v); });' % (c, py, lire, alias, name))
+
+    def _std_array_member(self, f, O, c, name, py, writable: bool):
         inner = f.children[0] if f.children else None
         if inner is not None and inner.children:
             elem = inner.children[0]
@@ -998,10 +1048,7 @@ class Binder(object):
         if inner is not None:
             base = _elem_base(inner.elem_type)
             if model.canonical_type(base) in model.PRINTF_FORMATS and base not in CHAR_TYPES:
-                return ('%s.def_property("%s", [](py::object self) { return detail::numeric_view('
-                        'self, self.cast<%s&>().%s); }, [](%s& o, py::object v) { '
-                        'detail::numeric_assign(o.%s, v); });' % (c, py, O, name, O, name),
-                        "numpy.ndarray")
+                return self._numeric_array(O, c, name, py, writable), "numpy.ndarray"
         return None, "std::array non gere"
 
     def _services(self, t: BoundType):
@@ -1277,6 +1324,24 @@ def span_pairs(cfg: Config) -> Dict[Tuple[str, str], str]:
     return out
 
 
+def writable_patterns(cfg: Config) -> List[str]:
+    """[pybind] writable = sim::inputs::*; sim::Etat::mode
+
+    Motifs glob sur le nom qualifie d'une variable globale, ou sur
+    'Classe::membre'. Vide : tout est inscriptible. Meme regle du motif sans
+    joker que partout ailleurs : 'sim::inputs' autorise aussi ce qu'il
+    contient.
+    """
+    return cfg.get_list("pybind", "writable")
+
+
+def read_only_config(cfg: Config) -> bool:
+    """[pybind] read_only : aucun setter nulle part. L'emporte sur writable.
+    L'option --read-only de 'scry gen' fait la meme chose sans toucher au
+    fichier de configuration."""
+    return cfg.get_bool("pybind", "read_only", False)
+
+
 def render_module(cfg: Config) -> str:
     return """// =============================================================================
 //  Genere par Scry (scry gen --pybind). Ne pas editer a la main.
@@ -1311,10 +1376,13 @@ def stub_globals(cfg: Config) -> List[Tuple[str, str]]:
 
 def build_context(structs: Sequence[model.Struct], cfg: Config, header=None,
                   variables: Sequence[model.Variable] = (),
-                  functions: Sequence[model.Function] = ()) -> Dict:
+                  functions: Sequence[model.Function] = (),
+                  read_only: bool = False) -> Dict:
     selected = select_variables(variables, cfg)
     bound_functions = select_functions(functions, cfg)
-    binder = Binder(structs, selected, bound_functions, span_pairs(cfg))
+    binder = Binder(structs, selected, bound_functions, span_pairs(cfg),
+                    writable=writable_patterns(cfg),
+                    read_only=read_only or read_only_config(cfg))
     # Headers des structures, plus ceux qui ne declarent que des variables
     # ou des fonctions.
     sources = generator.source_headers(list(structs), cfg, header)
@@ -1339,6 +1407,9 @@ def build_context(structs: Sequence[model.Struct], cfg: Config, header=None,
             for e in binder.enums],
         "namespaces": binder.namespaces,
         "views": [{"alias": t.alias, "name": name} for t, name in binder.views],
+        # En lecture seule, les vues perdent __setitem__ : remplacer un element
+        # entier serait une ecriture comme une autre.
+        "views_writable": _cbool(not binder.read_only),
         "vector_views": [{"cpp": rec["cpp"], "name": rec["name"]}
                          for rec in binder.vectors.values() if rec["name"]],
         "hashes": binder.root_hashes(),
@@ -1350,15 +1421,16 @@ def build_context(structs: Sequence[model.Struct], cfg: Config, header=None,
 
 def render(structs: Sequence[model.Struct], cfg: Optional[Config] = None, header=None,
            variables: Sequence[model.Variable] = (),
-           functions: Sequence[model.Function] = ()) -> str:
+           functions: Sequence[model.Function] = (), read_only: bool = False) -> str:
     cfg = cfg or load_config()
     return generator.environment().get_template("pybind.h.j2").render(
-        **build_context(structs, cfg, header, variables, functions))
+        **build_context(structs, cfg, header, variables, functions, read_only))
 
 
 def generate(structs: Sequence[model.Struct], cfg: Optional[Config] = None,
              header=None, variables: Sequence[model.Variable] = (),
-             functions: Sequence[model.Function] = ()) -> List[str]:
+             functions: Sequence[model.Function] = (),
+             read_only: bool = False) -> List[str]:
     """Ecrit le header de bindings, le module embarque, le stub .pyi et le
     fragment CMake."""
     cfg = cfg or load_config()
@@ -1366,7 +1438,7 @@ def generate(structs: Sequence[model.Struct], cfg: Optional[Config] = None,
     written = []
     if cfg.emit_abi_checks:
         written.append(generator.generate_abi(structs, cfg, header=header))
-    context = build_context(structs, cfg, header, variables, functions)
+    context = build_context(structs, cfg, header, variables, functions, read_only)
     text = generator.environment().get_template("pybind.h.j2").render(**context)
     written.append(generator._write(cfg, header_name(cfg), text))
     written.append(generator._write(cfg, module_source_name(cfg), render_module(cfg)))

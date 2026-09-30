@@ -97,7 +97,7 @@ copie, 330 tests. Trois faiblesses dominent :
 | B3 | Rechargement à chaud des scripts | Python embarqué | 4 | S | P1 |
 | B4 | Vue numpy structurée d'une struct entière | Python embarqué | 4 | M | P2 |
 | B5 | Budget de temps par tick et profilage | Python embarqué | 4 | S | P2 |
-| B6 | Mode lecture seule et liste blanche d'écriture | Python embarqué | 3 | S | P2 |
+| B6 | Mode lecture seule et liste blanche d'écriture | Python embarqué | 3 | S | P2, fait |
 | B7 | Enregistrement et rejeu d'un vol | Python embarqué | 4 | L | P2 |
 | B8 | Métadonnées des commentaires : unités, bornes | Python embarqué | 4 | M | P2 |
 | B9 | Autotest : couverture des interfaces et fuzzing borné | Python embarqué | 3 | M | P3 |
@@ -325,13 +325,38 @@ compte les dépassements, sans dire où part le temps.
 et, sur dépassement, un échantillon `cProfile` du tick fautif. Option pour
 couper un scénario qui dépasse N fois.
 
-#### B6. Mode lecture seule et liste blanche d'écriture · P2 · S
+#### B6. Mode lecture seule et liste blanche d'écriture · P2 · S · **fait**
 
 **Problème.** Un script peut écrire n'importe quelle variable exposée, y
 compris des sorties du modèle de vol qu'il ne devrait qu'observer.
 
 **Proposition.** `[pybind] writable = sim::inputs::*` : tout le reste est
 généré sans setter. Un mode `--read-only` pour les scripts d'observation.
+
+**Fait.** `[pybind] writable` et `read_only`, plus l'option
+`scry gen --pybind --read-only` qui ferme tout sans toucher au fichier de
+configuration. Les motifs portent sur le nom qualifié d'une variable globale ou
+sur `Classe::membre`, avec la même règle du motif sans joker que C1 et B1.
+
+La fermeture n'est pas cosmétique. Au-delà du setter retiré, la **vue numpy
+d'un tableau est marquée non inscriptible** : sans cela un script écrirait à
+travers elle et la liste blanche ne vaudrait rien. En lecture seule complète,
+les vues de tableaux et de vecteurs perdent aussi `__setitem__`, remplacer un
+élément entier étant une écriture comme une autre.
+
+**Limite assumée, et c'est la seule décision de conception qui compte ici : la
+granularité est le TYPE et son membre, jamais un chemin.** Il n'y a qu'un
+`py::class_` par type C++ ; si `a` et `b` sont du même type, on ne peut pas
+rendre `a.x` inscriptible et `b.x` en lecture seule. C'est écrit dans le README
+et dans `scry.ini.example` plutôt que caché.
+
+**Preuve.** Dix tests purs, et un **second module compilé** dans
+`tests/test_pybind_embed.py` avec `writable = cases::Sample::from;
+cases::g_speed` : à l'exécution sous MSVC, les deux écritures autorisées
+passent, et dix autres sont refusées — scalaire, enum, champ de bits, `char[N]`,
+tableau, vue numpy, chaîne globale, tableau global, namespace imbriqué, membre
+d'un élément de vecteur. Le test vérifie ensuite dans les octets que rien n'a
+bougé là où l'écriture était refusée.
 
 #### B7. Enregistrement et rejeu d'un vol · P2 · L
 

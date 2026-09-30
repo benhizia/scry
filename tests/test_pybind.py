@@ -1,5 +1,6 @@
 """Generation pybind11 : rendu du header, du stub et des noms, sans compiler."""
 
+import re
 from pathlib import Path
 
 from scry import model
@@ -97,15 +98,15 @@ def test_types_portees_et_enums():
 
 def test_regles_des_membres():
     _, text = _render()
-    assert 'detail::field(c0, "count", &T0::count);' in text
+    assert 'detail::field(c0, "count", &T0::count, true);' in text
     assert "o.flag = v;" in text                              # champ de bits
     assert "detail::char_get(o.label)" in text
-    assert "detail::numeric_view(self, self.cast<T0&>().values)" in text
+    assert "detail::numeric_view(self, self.cast<T0&>().values, true)" in text
     assert "detail::make_view(o.items)" in text
     assert 'detail::bind_view<' in text and '"_ArrayView_ns_Item"' in text
     assert "reinterpret_cast<std::uintptr_t>(o.next)" in text
-    assert 'detail::field(c0, "from_", &T0::from);' in text   # mot-cle Python
-    assert 'detail::field(c0, "name", &T0::name);' in text    # std::string
+    assert 'detail::field(c0, "from_", &T0::from, true);' in text   # mot-cle Python
+    assert 'detail::field(c0, "name", &T0::name, true);' in text    # std::string
     assert "// list : std::vector non liee" in text
 
 
@@ -161,15 +162,15 @@ def test_globales_une_propriete_par_nature():
     s, variables = _variables()
     text = pybind.render([s], load_config(EXAMPLE_INI), variables=variables)
     expected = [
-        'globals.object("app", "g_s", []() -> auto& { return ::app::g_s; });',
-        'globals.value("app", "g_t", []() -> auto& { return ::app::g_t; });',
-        'globals.value("app", "g_mode", []() -> auto& { return ::app::g_mode; });',
-        'globals.numeric("app", "g_v", []() -> auto& { return ::app::g_v; });',
-        'globals.text("app", "g_name", []() -> auto& { return ::app::g_name; });',
-        'globals.pointee("app", "g_ptr", []() -> auto& { return ::app::g_ptr; });',
-        'globals.address("app", "g_raw", []() -> auto& { return ::app::g_raw; });',
-        'globals.value("app::sub", "g_n", []() -> auto& { return ::app::sub::g_n; });',
-        'globals.value("", "g_racine", []() -> auto& { return ::g_racine; });',
+        'globals.object("app", "g_s", []() -> auto& { return ::app::g_s; }, true);',
+        'globals.value("app", "g_t", []() -> auto& { return ::app::g_t; }, true);',
+        'globals.value("app", "g_mode", []() -> auto& { return ::app::g_mode; }, true);',
+        'globals.numeric("app", "g_v", []() -> auto& { return ::app::g_v; }, true);',
+        'globals.text("app", "g_name", []() -> auto& { return ::app::g_name; }, true);',
+        'globals.pointee("app", "g_ptr", []() -> auto& { return ::app::g_ptr; }, true);',
+        'globals.address("app", "g_raw", []() -> auto& { return ::app::g_raw; }, true);',
+        'globals.value("app::sub", "g_n", []() -> auto& { return ::app::sub::g_n; }, true);',
+        'globals.value("", "g_racine", []() -> auto& { return ::g_racine; }, true);',
         "// app::g_list : std::vector non liee (STL, pas un POD)",
     ]
     for line in expected:
@@ -371,13 +372,13 @@ def _render_stl(tmp_path=None, spans=""):
 
 def test_vector_numerique_en_vue_numpy_et_structures_en_sequence():
     _, _, text = _render_stl()
-    assert 'detail::vector_member(c0, "gains", &T0::gains);' in text
-    assert 'detail::vector_member(c0, "items", &T0::items);' in text
+    assert 'detail::vector_member(c0, "gains", &T0::gains, true);' in text
+    assert 'detail::vector_member(c0, "items", &T0::items, true);' in text
     # Une classe de vue par TYPE de vector, et le type vient du membre :
     # reecrire 'std::vector<...>' laisserait l'allocateur a deviner.
-    assert 'detail::bind_vector_view<decltype(T0::items)>(m, "_VectorView_ns_Item");' in text
-    assert 'detail::bind_vector_view<decltype(T0::noms)>(m, "_VectorView_str");' in text
-    assert 'detail::bind_vector_view<decltype(T0::modes)>(m, "_VectorView_ns_Mode");' in text
+    assert 'detail::bind_vector_view<decltype(T0::items)>(m, "_VectorView_ns_Item", true);' in text
+    assert 'detail::bind_vector_view<decltype(T0::noms)>(m, "_VectorView_str", true);' in text
+    assert 'detail::bind_vector_view<decltype(T0::modes)>(m, "_VectorView_ns_Mode", true);' in text
     # Numerique : aucune classe de vue, c'est numpy qui la porte.
     assert "decltype(T0::gains)" not in text
 
@@ -401,7 +402,7 @@ def test_une_seule_vue_par_type_de_vector():
     text = pybind.render([s, _item_struct()], load_config(EXAMPLE_INI))
     assert text.count('bind_vector_view<decltype(T0::items)>') == 1
     assert "_VectorView_ns_Item" in text
-    assert 'detail::vector_member(c0, "autres", &T0::autres);' in text
+    assert 'detail::vector_member(c0, "autres", &T0::autres, true);' in text
 
 
 def test_span_pairs_lit_la_configuration(tmp_path):
@@ -418,7 +419,7 @@ def test_span_pointeur_et_compteur(tmp_path):
     assert 'detail::span_member(c0, "bornes", &T0::bornes, &T0::nb_bornes);' in text
     assert 'detail::span_member(c0, "mesures", &T0::mesures, &T0::nb_mesures);' in text
     # Le type pointe recoit sa vue, comme un tableau de structures.
-    assert 'detail::bind_view<T1>(m, "_ArrayView_ns_Item");' in text
+    assert 'detail::bind_view<T1>(m, "_ArrayView_ns_Item", true);' in text
     # Sans declaration, un pointeur reste une adresse en lecture seule.
     _, _, sans = _render_stl()
     assert 'reinterpret_cast<std::uintptr_t>(o.bornes)' in sans
@@ -490,8 +491,9 @@ def test_vector_global(tmp_path):
                             elem=s.fields[1].elem)),
     ]
     text = pybind.render([s, _item_struct()], load_config(EXAMPLE_INI), variables=variables)
-    assert 'globals.vector("app", "g_serie", []() -> auto& { return ::app::g_serie; });' in text
-    assert 'globals.vector("app", "g_items", []() -> auto& { return ::app::g_items; });' in text
+    for nom in ("g_serie", "g_items"):
+        assert ('globals.vector("app", "%s", []() -> auto& { return ::app::%s; }, true);'
+                % (nom, nom)) in text
     binder = pybind.Binder([s, _item_struct()], variables)
     stub = pybind.render_stub(binder)
     assert 'g_serie: "numpy.ndarray"' in stub
@@ -516,7 +518,7 @@ def test_membre_non_public_jamais_nomme_meme_dans_un_decltype():
     assert "cache : membre private, non expose" in text
     assert "tableau : membre private, non expose" in text
     assert "decltype(T0::cache)" not in text and "T0::tableau" not in text
-    assert 'detail::field(c0, "ouvert", &T0::ouvert);' in text
+    assert 'detail::field(c0, "ouvert", &T0::ouvert, true);' in text
 
 
 def test_type_imbrique_vu_seulement_comme_element_de_vector():
@@ -530,8 +532,8 @@ def test_type_imbrique_vu_seulement_comme_element_de_vector():
     assert "using T1 = ns::P::Interne;" in text
     # Portee : le type imbrique est un attribut de sa classe parente.
     assert 'detail::class_t<T1> c1(c0, "Interne");' in text
-    assert 'detail::field(c1, "v", &T1::v);' in text
-    assert 'detail::vector_member(c0, "morceaux", &T0::morceaux);' in text
+    assert 'detail::field(c1, "v", &T1::v, true);' in text
+    assert 'detail::vector_member(c0, "morceaux", &T0::morceaux, true);' in text
     assert '_VectorView_ns_P_Interne' in text
 
 
@@ -557,3 +559,118 @@ def test_stub_et_module_embarque():
     assert "PYBIND11_EMBEDDED_MODULE(sut, m)" in source
     assert "scry::bind::register_all(m);" in source
     assert '#include "scry_pybind.generated.h"' in source
+
+
+# -- liste blanche d'ecriture et lecture seule -------------------------------
+def _ini(tmp_path, corps):
+    path = tmp_path / "scry.ini"
+    path.write_text("[pybind]\n" + corps, encoding="utf-8")
+    return load_config(path)
+
+
+def test_sans_liste_blanche_tout_reste_inscriptible():
+    s, variables = _variables()
+    text = pybind.render([s], load_config(EXAMPLE_INI), variables=variables)
+    assert 'detail::field(c0, "count", &T0::count, true);' in text
+    assert 'globals.value("app", "g_t", []() -> auto& { return ::app::g_t; }, true);' in text
+
+
+def test_read_only_ferme_tout(tmp_path):
+    s, variables = _variables()
+    text = pybind.render([s], _ini(tmp_path, "read_only = true\n"), variables=variables)
+    # Membres : plus aucun setter, quelle que soit la nature.
+    assert 'detail::field(c0, "count", &T0::count, false);' in text
+    assert 'detail::field(c0, "name", &T0::name, false);' in text
+    assert 'def_property_readonly("flag"' in text          # champ de bits
+    assert 'def_property_readonly("label"' in text          # char[N]
+    assert 'def_property_readonly("values"' in text         # tableau numerique
+    # La vue numpy elle-meme est fermee : sinon on ecrirait a travers elle.
+    assert "detail::numeric_view(self, self.cast<T0&>().values, false)" in text
+    assert "detail::numeric_assign" not in text.split("namespace detail")[-1].split(
+        "inline void register_types")[1]
+    # Variables globales.
+    assert 'globals.value("app", "g_t", []() -> auto& { return ::app::g_t; }, false);' in text
+    assert 'globals.numeric("app", "g_v", []() -> auto& { return ::app::g_v; }, false);' in text
+    assert 'globals.text("app", "g_name", []() -> auto& { return ::app::g_name; }, false);' in text
+    # Les vues perdent __setitem__ : remplacer un element est une ecriture.
+    assert 'detail::bind_view<T1>(m, "_ArrayView_ns_Item", false);' in text
+
+
+def test_read_only_par_la_ligne_de_commande_sans_toucher_au_ini():
+    s, variables = _variables()
+    cfg = load_config(EXAMPLE_INI)
+    assert pybind.read_only_config(cfg) is False
+    text = pybind.render([s], cfg, variables=variables, read_only=True)
+    assert 'detail::field(c0, "count", &T0::count, false);' in text
+
+
+def test_liste_blanche_sur_les_membres(tmp_path):
+    s = _struct()
+    cfg = _ini(tmp_path, "writable = ns::S::count; ns::S::label\n")
+    text = pybind.render([s], cfg)
+    assert 'detail::field(c0, "count", &T0::count, true);' in text
+    assert 'detail::field(c0, "mode", &T0::mode, false);' in text
+    # char[N] nomme : son setter reste.
+    assert 'detail::char_set(o.label' in text
+    # Le tableau numerique, non nomme, perd le sien et sa vue est fermee.
+    assert "detail::numeric_view(self, self.cast<T0&>().values, false)" in text
+
+
+def test_liste_blanche_sur_les_globales(tmp_path):
+    s, variables = _variables()
+    cfg = _ini(tmp_path, "writable = app::g_t; app::sub::*\n")
+    text = pybind.render([s], cfg, variables=variables)
+    assert 'globals.value("app", "g_t", []() -> auto& { return ::app::g_t; }, true);' in text
+    assert 'globals.value("app::sub", "g_n", []() -> auto& { return ::app::sub::g_n; }, true);' \
+        in text
+    assert 'globals.value("app", "g_mode", []() -> auto& { return ::app::g_mode; }, false);' \
+        in text
+
+
+def test_un_motif_sans_joker_autorise_ce_qu_il_contient(tmp_path):
+    """Meme convention que le filtrage des types et que [pybind] functions :
+    nommer une portee, c'est nommer son contenu."""
+    s = _struct()
+    text = pybind.render([s], _ini(tmp_path, "writable = ns::S\n"))
+    assert 'detail::field(c0, "count", &T0::count, true);' in text
+    assert 'detail::field(c0, "mode", &T0::mode, true);' in text
+    # Mais pas une autre classe.
+    autre = model.Struct(name="ns::Autre", size=4, align=4, header="a.h",
+                         fields=[F("x", 0, 4)])
+    text = pybind.render([s, autre], _ini(tmp_path, "writable = ns::S\n"))
+    assert re.search(r'detail::field\(c\d+, "x", &T\d+::x, false\);', text)
+
+
+def test_read_only_l_emporte_sur_la_liste_blanche(tmp_path):
+    s = _struct()
+    cfg = _ini(tmp_path, "writable = ns::S::*\nread_only = true\n")
+    text = pybind.render([s], cfg)
+    assert 'detail::field(c0, "count", &T0::count, false);' in text
+
+
+def test_vector_et_span_suivent_la_liste_blanche(tmp_path):
+    structs = [_struct_stl(), _item_struct()]
+    cfg = _ini(tmp_path, "writable = ns::P::gains\n"
+                         "spans = ns::P::bornes: nb_bornes\n")
+    text = pybind.render(structs, cfg)
+    assert 'detail::vector_member(c0, "gains", &T0::gains, true);' in text
+    assert 'detail::vector_member(c0, "items", &T0::items, false);' in text
+    # Un span reste une vue : l'ecriture se joue sur les membres des elements.
+    assert 'detail::span_member(c0, "bornes", &T0::bornes, &T0::nb_bornes);' in text
+
+
+def test_la_granularite_est_le_type_et_non_le_chemin(tmp_path):
+    """Il n'y a qu'un py::class_ par type : deux membres du meme type partagent
+    donc leurs regles d'ecriture. C'est une limite, elle doit se voir."""
+    inner = F("x", 0, 4)
+    interne = model.Struct(name="ns::In", size=4, align=4, header="i.h", fields=[inner])
+    s = model.Struct(name="ns::S2", size=8, align=4, header="s.h", fields=[
+        F("a", 0, 4, model.STRUCT, "In", qualified_type="ns::In", children=[inner]),
+        F("b", 4, 4, model.STRUCT, "In", qualified_type="ns::In", children=[inner]),
+    ])
+    text = pybind.render([s, interne], _ini(tmp_path, "writable = ns::S2::a\n"))
+    # 'a' et 'b' se distinguent, eux, car ce sont des membres de ns::S2.
+    assert 'detail::field(c0, "a", &T0::a, true);' in text
+    assert 'detail::field(c0, "b", &T0::b, false);' in text
+    # Mais leur contenu est le meme type : une seule regle pour ns::In::x.
+    assert text.count('detail::field(c1, "x", &T1::x,') == 1

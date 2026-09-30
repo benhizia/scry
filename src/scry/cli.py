@@ -137,7 +137,8 @@ def cmd_gen(args, cfg):
         from scry.codegen import pybind
         for written in pybind.generate(structs, cfg, header=args.header,
                                        variables=introspector.variables,
-                                       functions=introspector.functions):
+                                       functions=introspector.functions,
+                                       read_only=args.read_only):
             if not written.endswith(cfg.abi_header):
                 print("Ecrit : %s" % written)
     _print_report(introspector, args.verbose)
@@ -379,6 +380,10 @@ def main(argv=None):
     p_gen.add_argument("--pybind", action="store_true",
                        help="genere aussi les bindings pybind11, le stub .pyi et le "
                             "fragment CMake")
+    p_gen.add_argument("--read-only", action="store_true",
+                       help="bindings sans aucun setter : pour un script qui observe "
+                            "sans agir (sinon [pybind] read_only, ou writable pour "
+                            "une liste blanche)")
     p_json = sub.add_parser("json", parents=[common], help="exporte le modele en JSON")
     p_json.add_argument("out", nargs="?", default="modele.json")
     p_diff = sub.add_parser("diff", parents=[common],
