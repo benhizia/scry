@@ -126,6 +126,28 @@ def select_channels(variables: List[model.Variable], names: List[str]) -> List[m
     return [by_name[n] for n in names]
 
 
+def select_types(structs: List[model.Struct], names: List[str]) -> List[model.Variable]:
+    """Structures retenues comme canaux : pour le mode reseau, ou un message
+    transporte une struct entiere et non une variable globale. Le canal porte
+    le nom court du type ("TelemetryBroadcast")."""
+    by_name = {}
+    for st in structs:
+        by_name[st.name] = st
+        by_name[st.name.split("::")[-1]] = st
+    missing = [n for n in names if n not in by_name]
+    if missing:
+        raise ValueError("types introuvables dans les headers : %s" % ", ".join(missing))
+    out = []
+    for n in names:
+        st = by_name[n]
+        if st.size is None:
+            raise ValueError("taille inconnue pour %s" % n)
+        root = model.Field(name=n, type_name=st.name, kind=model.STRUCT, size=st.size,
+                           qualified_type=st.name, children=st.fields)
+        out.append(model.Variable(name=n.split("::")[-1], qualified_name=st.name, field=root))
+    return out
+
+
 def build(channels: List[model.Variable]) -> Tuple[str, List[Tuple[model.Variable, int]], int, int]:
     """Texte du descripteur, offsets des canaux dans la trame, taille, schema."""
     b = _Builder()
@@ -215,15 +237,31 @@ def _leaves(fld: model.Field):
 
 
 def generate(variables: List[model.Variable], names: List[str], out_dir: str,
-             desc_name: str, include_headers: List[str]) -> List[str]:
-    channels = select_channels(variables, names)
+             desc_name: str, include_headers: List[str],
+             structs: Optional[List[model.Struct]] = None,
+             type_names: Optional[List[str]] = None) -> List[str]:
+    """Ecrit le .rvndesc, et la glue du simulateur s'il y a des variables.
+
+    Sans type_names, les canaux sont les variables globales (toutes si 'names'
+    est vide). Avec type_names, ce sont ces structures, suivies des variables
+    explicitement demandees dans 'names'.
+    """
+    if type_names:
+        typed = select_types(structs or [], type_names)
+        globals_ = select_channels(variables, names) if names else []
+    else:
+        typed, globals_ = [], select_channels(variables, names)
+    channels = globals_ + typed
     if not channels:
-        raise ValueError("aucune variable globale a publier")
+        raise ValueError("aucune variable globale ni aucun type a publier")
     text, placed, frame_size, schema = build(channels)
+    placed = [(v, off) for v, off in placed if v not in typed]
     os.makedirs(out_dir, exist_ok=True)
     desc_path = os.path.join(out_dir, desc_name + ".rvndesc")
     with open(desc_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
+    if not placed:                     # que des types : rien a publier par SHM
+        return [desc_path]
     pub_path = os.path.join(out_dir, "raven_publish.gen.h")
     with open(pub_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(_publish_header(placed, frame_size, schema, include_headers))

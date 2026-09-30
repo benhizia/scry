@@ -74,14 +74,26 @@ void Engine::set_source(bool connected, uint64_t lost, const std::string& error)
 
 void Engine::on_frame(const Frame& f) {
     std::lock_guard<std::mutex> l(m_);
+    // Le moteur tient une image de toutes les donnees observees. Une trame
+    // complete la remplace ; un message reseau ne met a jour que son canal.
+    if (f.channel < 0) {
+        if (f.size != latest_.size()) { ++malformed_; return; }
+        std::memcpy(latest_.data(), f.data, latest_.size());
+    } else {
+        const ChannelDesc* ch = d_.channel(f.channel);
+        if (!ch || f.size != ch->size) { ++malformed_; return; }
+        std::memcpy(latest_.data() + ch->frame_offset, f.data, f.size);
+    }
     ++frames_;
     last_no_ = f.no;
-    std::memcpy(latest_.data(), f.data, latest_.size());
+    const unsigned char* img = latest_.data();
+    auto concerned = [&](FieldRef r) { return f.channel < 0 || r.channel == f.channel; };
 
     // Sentinelles : chaque trame est comparee a la precedente, octet par octet.
     for (auto& kv : sentinels_) {
+        if (!concerned(kv.first)) continue;
         const FieldDesc& fd = *d_.field(kv.first);
-        const unsigned char* p = f.data + d_.frame_offset(kv.first);
+        const unsigned char* p = img + d_.frame_offset(kv.first);
         Sentinel& s = kv.second;
         if (!s.prev.empty() && std::memcmp(s.prev.data(), p, fd.bytes()) != 0) {
             ++s.count;
@@ -91,15 +103,18 @@ void Engine::on_frame(const Frame& f) {
         }
         s.prev.assign(p, p + fd.bytes());
     }
-    // Traces : une valeur par trame, aucune n'est sautee.
+    // Traces : une valeur par trame (ou par message du canal), aucune n'est sautee.
     for (const FieldRef& r : trc_)
-        events_.push_back("t " + ref_str(r) + " " + std::to_string(f.no) + " " +
-                          num(read_number(*d_.field(r), f.data + d_.frame_offset(r))));
+        if (concerned(r))
+            events_.push_back("t " + ref_str(r) + " " + std::to_string(f.no) + " " +
+                              num(read_number(*d_.field(r), img + d_.frame_offset(r))));
     while (events_.size() > kMaxQueued) { events_.pop_front(); ++dropped_; }
 
-    if (state_ == RecState::Armed && (!trigger_.active || trigger_.eval(d_, f.data)))
+    if (state_ == RecState::Armed && (!trigger_.active || trigger_.eval(d_, img)))
         start_recording(f);
-    if (state_ == RecState::Recording && !writer_.write(f.no, f.t_ns, f.data))
+    // Un enregistrement par trame ou par message : l'image complete des champs
+    // choisis, et le canal qui vient d'etre mis a jour.
+    if (state_ == RecState::Recording && !writer_.write(f.no, f.t_ns, img, f.channel))
         stop_recording("erreur d'ecriture, enregistrement arrete");
 }
 
@@ -148,7 +163,7 @@ std::string Engine::status_line() const {
     s += " frames=" + std::to_string(frames_) + " last=" + std::to_string(last_no_) +
          " lost=" + std::to_string(src_lost_) + " src=" + (src_connected_ ? "1" : "0") +
          " rec=" + std::to_string(writer_.records()) + " bytes=" + std::to_string(writer_.bytes()) +
-         " dropped=" + std::to_string(dropped_) + " msg=";
+         " dropped=" + std::to_string(dropped_) + " bad=" + std::to_string(malformed_) + " msg=";
     s += !src_error_.empty() && !src_connected_ ? src_error_ : message_;
     return s + "\n";
 }

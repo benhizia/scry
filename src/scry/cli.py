@@ -165,13 +165,15 @@ def cmd_diff(args, cfg):
 def cmd_raven(args, cfg):
     from scry.codegen import raven
     introspector = _introspector(args, cfg)
-    introspector.parse(args.header)
+    structs = introspector.parse(args.header)
     names = args.channel or cfg.get_list("raven", "channels")
+    types = args.struct or cfg.get_list("raven", "structs")
     out_dir = args.out or str(cfg.output_dir)
     name = args.name or cfg.get("raven", "name", "") or "raven"
     headers = [os.path.abspath(h).replace(os.sep, "/")
                for h in introspector.report.parsed]
-    for written in raven.generate(introspector.variables, names, out_dir, name, headers):
+    for written in raven.generate(introspector.variables, names, out_dir, name, headers,
+                                  structs=structs, type_names=types):
         print("Ecrit : %s" % written)
     _print_report(introspector, args.verbose)
     return 1 if introspector.report.conflicts else 0
@@ -375,6 +377,9 @@ def main(argv=None):
     p_raven.add_argument("--channel", action="append", metavar="VARIABLE",
                          help="variable globale publiee comme canal, cumulable "
                               "(defaut : [raven] channels, sinon toutes)")
+    p_raven.add_argument("--struct", action="append", metavar="STRUCT",
+                         help="structure publiee comme canal (mode reseau : un message = "
+                              "une struct), cumulable (defaut : [raven] structs)")
     p_raven.add_argument("--name", help="nom du descripteur (defaut : [raven] name)")
     p_raven.add_argument("-o", "--out", help="dossier de sortie (defaut : [paths] output)")
     p_prod = sub.add_parser("producer", parents=[common],

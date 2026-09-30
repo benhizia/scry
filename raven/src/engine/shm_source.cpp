@@ -5,6 +5,7 @@
 
 #include "raven/producer.h"
 #include "raven/source.h"
+#include "sources.h"
 
 namespace raven {
 
@@ -97,12 +98,8 @@ private:
     std::string error_;
 };
 
-std::unique_ptr<ISource> make_source(const std::string& spec, const Descriptor& d) {
-    const size_t colon = spec.find(':');
-    const std::string type = spec.substr(0, colon);
-    const std::string arg = colon == std::string::npos ? "" : spec.substr(colon + 1);
-    if (type == "shm") return std::unique_ptr<ISource>(new ShmSource(arg, d));
-    return nullptr;
+std::unique_ptr<ISource> make_shm_source(const std::string& arg, const Descriptor& d) {
+    return std::unique_ptr<ISource>(new ShmSource(arg, d));
 }
 
 } // namespace raven

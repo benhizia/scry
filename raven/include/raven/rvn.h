@@ -1,6 +1,6 @@
 // Fichier d'enregistrement .rvn : auto-descriptif et a enregistrements fixes.
 //
-//   RAVEN-RVN 1
+//   RAVEN-RVN 2                             (la version 1 se relit toujours)
 //   <texte complet du .rvndesc>             (de 'rvndesc 1' a 'end')
 //   select <canal> <champ>                  (une ligne par champ enregistre)
 //   trigger <texte libre>                   (condition de depart, pour memoire)
@@ -8,8 +8,11 @@
 //   data
 //   <enregistrements binaires>
 //
-// Chaque enregistrement : numero de trame (u64), horodatage (u64 ns), puis les
-// octets de chaque champ selectionne, dans l'ordre des lignes 'select'. La
+// Chaque enregistrement : numero de trame (u64), horodatage (u64 ns), canal mis
+// a jour (i32, -1 pour une trame complete ; absent en version 1), reserve
+// (u32), puis les octets de chaque champ selectionne, dans l'ordre des lignes
+// 'select'. En reseau, chaque message produit un enregistrement : l'etat de
+// tous les champs choisis a cet instant, et le canal qui vient de changer. La
 // taille fixe rend la n-ieme trame accessible par un simple calcul, et un
 // fichier interrompu reste lisible jusqu'au dernier enregistrement complet.
 // Un trou dans les numeros de trame est une perte.
@@ -28,7 +31,7 @@ public:
     bool open(const std::string& path, const Descriptor& d, const std::vector<FieldRef>& sel,
               const std::string& trigger, std::string& error);
     // 'frame' est la trame complete, de taille d.frame_size().
-    bool write(uint64_t frame_no, uint64_t t_ns, const unsigned char* frame);
+    bool write(uint64_t frame_no, uint64_t t_ns, const unsigned char* frame, int channel = -1);
     void close();
 
     bool is_open() const { return f_ != nullptr; }
@@ -61,6 +64,8 @@ public:
     // un pointeur sur ses octets (valide jusqu'au prochain appel).
     bool read(uint64_t n, uint64_t& frame_no, uint64_t& t_ns,
               std::vector<const unsigned char*>& fields);
+    int last_channel() const { return last_channel_; }   // canal de la derniere lecture
+    int version() const { return version_; }
 
 private:
     std::FILE* f_ = nullptr;
@@ -71,6 +76,8 @@ private:
     long long data_start_ = 0;
     uint32_t record_size_ = 0;
     uint64_t count_ = 0;
+    uint32_t head_ = 16;                // en-tete d'enregistrement : 16 (v1) ou 24 (v2)
+    int version_ = 0, last_channel_ = -1;
     std::vector<unsigned char> buf_;
 };
 
