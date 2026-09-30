@@ -4,6 +4,7 @@ Chaque cycle de la fausse appli : le code metier (altitude += rate), puis
 l'etape autotest (runner.tick()). C'est exactement l'ordre de l'appli reelle.
 """
 
+import os
 import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
@@ -212,3 +213,149 @@ def test_snapshot_et_diff():
     apres = snapshot(Vue(["Cruise", "Climb"]))
     assert diff(avant, apres) == ["legs[1].phase : 'Cruise' -> 'Climb'"]
     assert diff({"a": 1.0}, {"a": 1.05}, tol=0.1) == []
+
+
+# -- rechargement a chaud ----------------------------------------------------
+def _ecrire(path, corps):
+    """Ecrit un fichier de scenario et pousse son horodatage, pour que le
+    changement soit visible quelle que soit la granularite du systeme."""
+    path.write_text(corps, encoding="utf-8")
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+
+SCENARIO = ("from autotest import scenario, cycles\n"
+            "@scenario\nasync def essai(sut):\n"
+            "    sut.inputs.rate = %s\n    await cycles(1)\n")
+
+
+def _veille(tmp_path, **kw):
+    """Runner en veille sur un dossier, avec un faux sut et sans journal."""
+    sut = _sut()
+    fichier = tmp_path / "test_essai.py"
+    _ecrire(fichier, SCENARIO % "1.0")
+    runner = Runner(str(tmp_path), sut=sut, log=lambda *_: None, watch=True,
+                    watch_every=1, **kw)
+    return runner, sut, fichier
+
+
+def test_veille_ne_se_declare_jamais_terminee(tmp_path):
+    """C'est la condition du rechargement : si tick() rendait False, l'appli
+    s'arreterait avant d'avoir pu recharger quoi que ce soit."""
+    runner, sut, _ = _veille(tmp_path)
+    for _ in range(20):
+        assert runner.tick() is True
+    assert runner.finished and len(runner.results) == 1
+    assert sut.inputs.rate == 1.0
+
+
+def test_un_fichier_modifie_relance_une_passe(tmp_path):
+    runner, sut, fichier = _veille(tmp_path)
+    while not runner.finished:
+        runner.tick()
+    assert (runner.passes, sut.inputs.rate) == (1, 1.0)
+
+    _ecrire(fichier, SCENARIO % "7.5")
+    runner.tick()                          # le poll voit la date changer
+    assert runner.passes == 2 and runner.results == []
+    while not runner.finished:
+        runner.tick()
+    # Le nouveau code a bien tourne : c'est la valeur du fichier reecrit.
+    assert sut.inputs.rate == 7.5
+    assert [r.status for r in runner.results] == ["passed"]
+
+
+def test_le_compteur_de_cycles_survit_au_rechargement(tmp_path):
+    """Le cycle est celui de l'application, que le rechargement n'interrompt
+    pas : c'est tout l'interet, le simulateur garde son etat."""
+    runner, _, fichier = _veille(tmp_path)
+    while not runner.finished:
+        runner.tick()
+    avant = runner.cycle
+    _ecrire(fichier, SCENARIO % "2.0")
+    runner.tick()
+    assert runner.cycle == avant + 1
+
+
+def test_un_fichier_ajoute_ou_supprime_est_vu(tmp_path):
+    """Un importlib.reload ne verrait ni l'ajout ni la suppression : le
+    rechargement purge les modules et relit le dossier."""
+    runner, _, fichier = _veille(tmp_path)
+    while not runner.finished:
+        runner.tick()
+    _ecrire(tmp_path / "test_autre.py", SCENARIO.replace("essai", "autre") % "3.0")
+    runner.tick()
+    assert len(runner._pending) + (1 if runner._current else 0) == 2
+    while not runner.finished:
+        runner.tick()
+    assert sorted(r.name for r in runner.results) == ["autre", "essai"]
+
+    (tmp_path / "test_autre.py").unlink()
+    runner.tick()
+    while not runner.finished:
+        runner.tick()
+    assert [r.name for r in runner.results] == ["essai"]
+
+
+def test_rechargement_en_pleine_execution_abandonne_le_scenario(tmp_path):
+    """La coroutine en vol tient des fonctions de l'ancien module : la
+    reprendre executerait du code qui n'existe plus."""
+    sut = _sut()
+    fichier = tmp_path / "test_long.py"
+    _ecrire(fichier, "from autotest import scenario, cycles\n"
+                     "@scenario\nasync def long(sut):\n    await cycles(500)\n")
+    runner = Runner(str(tmp_path), sut=sut, log=lambda *_: None, watch=True, watch_every=1)
+    for _ in range(5):
+        runner.tick()
+    assert runner._current is not None and not runner.results
+
+    _ecrire(fichier, SCENARIO % "4.0")
+    runner.tick()
+    # La passe neuve demarre dans le meme tick ; 'long' est abandonne sans
+    # laisser de resultat, puisqu'il n'a ni reussi ni echoue.
+    assert runner.passes == 2
+    while not runner.finished:
+        runner.tick()
+    assert [r.name for r in runner.results] == ["essai"]
+    assert sut.inputs.rate == 4.0
+
+
+def test_reload_explicite_sans_veille(tmp_path):
+    """reload() s'appelle aussi a la main, depuis l'application : une touche,
+    une commande reseau. La veille n'est qu'un declencheur parmi d'autres."""
+    sut = _sut()
+    _ecrire(tmp_path / "test_essai.py", SCENARIO % "1.0")
+    runner = Runner(str(tmp_path), sut=sut, log=lambda *_: None)
+    while runner.tick():
+        pass
+    assert runner.finished and runner.passes == 1
+
+    _ecrire(tmp_path / "test_essai.py", SCENARIO % "9.0")
+    assert runner.reload() == 2
+    assert not runner.finished
+    while runner.tick():
+        pass
+    assert sut.inputs.rate == 9.0
+
+
+def test_le_rapport_est_reecrit_a_chaque_passe(tmp_path):
+    """Les resultats d'une passe decrivent du code qui n'existe plus : ils sont
+    remplaces, pas cumules."""
+    rapport = tmp_path / "rapport.xml"
+    dossier = tmp_path / "scenarios"
+    dossier.mkdir()
+    sut = _sut()
+    _ecrire(dossier / "test_essai.py", SCENARIO % "1.0")
+    runner = Runner(str(dossier), sut=sut, log=lambda *_: None, watch=True,
+                    watch_every=1, report=str(rapport))
+    while not runner.finished:
+        runner.tick()
+    assert ET.parse(rapport).getroot().get("tests") == "1"
+
+    _ecrire(dossier / "test_autre.py", SCENARIO.replace("essai", "autre") % "2.0")
+    runner.tick()
+    while not runner.finished:
+        runner.tick()
+    root = ET.parse(rapport).getroot()
+    assert root.get("tests") == "2"
+    assert sorted(c.get("name") for c in root.findall("testcase")) == ["autre", "essai"]

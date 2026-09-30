@@ -9,10 +9,12 @@
 #include "legacy_app.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 
 #if LEGACY_AUTOTEST
 #include "autotest_embed.h"
@@ -75,9 +77,19 @@ int main(int argc, char** argv)
     cfg.venv = env("AUTOTEST_VENV");
     cfg.paths = {L"" AUTOTEST_PYTHON_DIR};
     cfg.scenarios = AUTOTEST_SCENARIOS_DIR;
-    cfg.select = argc > 1 ? argv[1] : "";
     cfg.tick_budget_ms = 5.0;
+    // '--watch' : mise au point. L'application ne s'arrete plus, les scenarios
+    // rejouent a chaque enregistrement d'un fichier. Tout autre argument est un
+    // filtre sur le nom ou les tags des scenarios.
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--watch") == 0)
+            cfg.watch = true;
+        else
+            cfg.select = argv[i];
+    }
     autotest::Host host(cfg);
+    if (cfg.watch)
+        std::printf("veille : modifiez un scenario, il rejoue. Ctrl+C pour sortir.\n");
 #else
     (void)argc;
     (void)argv;
@@ -90,6 +102,10 @@ int main(int argc, char** argv)
 #if LEGACY_AUTOTEST
         if (!host.tick())       // l'etape autotest : le metier a fini ce cycle
             return host.exit_code();
+        // En veille, la boucle ne s'arrete jamais : lui donner sa cadence
+        // plutot que de bruler un coeur pour rien.
+        if (cfg.watch)
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
 #else
         if (app::g_cycle == 10) {
             std::printf("10 cycles, phase %d\n", static_cast<int>(app::g_telemetry.phase));

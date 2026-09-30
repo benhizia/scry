@@ -144,7 +144,44 @@ Les messages d'échec donnent la valeur obtenue et l'attendu :
 Les scénarios s'exécutent l'un après l'autre : d'abord les fichiers
 `test_*.py` par ordre alphabétique, puis les scénarios dans l'ordre de
 déclaration. `Runner(select="vol")` ne lance que ceux dont le nom ou un tag
-contient `vol` ; la démo passe `argv[1]` à ce filtre.
+contient `vol` ; la démo passe ses arguments à ce filtre.
+
+## Mettre un scénario au point sans relancer le simulateur
+
+C'est le mode **veille**. L'autotest ne se déclare plus terminé : il surveille
+la date des fichiers `test_*.py` et rejoue une passe complète dès qu'un seul
+change. On corrige, on enregistre, ça rejoue dans la seconde — et le simulateur
+garde tout son état, puisque c'est l'application qui continue de tourner.
+
+```cpp
+cfg.watch = true;        // au lieu de s'arrêter, l'autotest attend une modification
+cfg.watch_every = 25;    // espacement des stat() du disque, en cycles
+```
+
+```
+legacy_app --watch
+```
+
+`host.reload()` force la même chose tout de suite, sans attendre la veille : à
+brancher sur ce que vous voulez, une touche, une commande réseau, un fichier
+témoin.
+
+Trois conséquences à connaître :
+
+- **`tick()` ne rend jamais `false`** en veille. C'est à l'application de
+  décider quand s'arrêter — sinon elle s'arrêterait avant d'avoir pu recharger
+  quoi que ce soit.
+- **Un scénario en cours est abandonné.** Sa coroutine tient des fonctions de
+  l'ancien module ; la reprendre exécuterait du code qui n'existe plus. Il ne
+  laisse pas de résultat, n'ayant ni réussi ni échoué.
+- **Les résultats sont remplacés, pas cumulés**, et le rapport JUnit est
+  réécrit à la fin de chaque passe : ceux de la passe précédente décrivent du
+  code disparu.
+
+Un fichier **ajouté ou supprimé** est vu, pas seulement modifié : le
+rechargement purge les modules de scénarios et relit le dossier. En revanche,
+un module d'aide que vos scénarios importent sous son propre nom
+(`import helpers`) n'est **pas** relu — seuls les `test_*.py` le sont.
 
 ## Ce que Python voit des structs
 

@@ -734,6 +734,11 @@ runtime de scénarios (`async def`, `await cycles(n)`, `expect(...)`) piloté
 par le séquenceur de l'application. `autotest/run_demo.sh` (Linux) ou
 `autotest\run_demo.bat` (Windows) construit et lance la démo avec CMake.
 
+En mise au point, le mode **veille** (`cfg.watch = true`, ou `--watch` sur la
+démo) évite de relancer le simulateur : l'autotest surveille la date des
+fichiers de scénarios et rejoue une passe dès qu'un seul change. Le simulateur
+garde son état, puisque c'est lui qui continue de tourner.
+
 ---
 
 ## 9. Améliorations recommandées
