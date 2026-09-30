@@ -15,11 +15,14 @@ commentaires de documentation, diff de modèles JSON, canal SHM de démonstratio
 (`scry producer`, `scry watch`), bindings pybind11 et interpréteur Python
 embarqué pour l'autotest, filtrage des types, `scry raven` (descripteur
 `.rvndesc` et glue de publication, `--channel` pour une variable, `--struct`
-pour une struct transportée par le réseau), et depuis le 30 septembre 2026 les
-**fonctions du header** appelables depuis Python (B1) ainsi que les **vues sur
-`std::vector`** et sur les paires pointeur + compteur (B2). Un script embarqué
-pilote désormais l'application, il ne se contente plus de reposer des
-variables.
+pour une struct transportée par le réseau). Depuis le 30 septembre 2026, l'axe
+Python embarqué est **clos pour l'essentiel** : les **fonctions du header**
+appelables depuis Python (B1), les **vues sur `std::vector`** et sur les paires
+pointeur + compteur (B2), le **rechargement à chaud** des scénarios (B3), le
+**budget de temps par tick** avec histogramme et profil (B5), et la **liste
+blanche d'écriture** (B6). Un script embarqué pilote désormais l'application au
+lieu de reposer des variables, sait ce qu'il coûte, n'écrit que là où on l'y
+autorise, et se corrige sans relancer le simulateur.
 
 ### 1.2 RAVEN (acquisition, enregistrement, visualisation, C++)
 
@@ -198,7 +201,7 @@ Dans [RAVEN_CONTOUR.md](RAVEN_CONTOUR.md) :
     chaînes), et paires pointeur + compteur déclarées dans `[pybind] spans`.
     `VectorView` garde le conteneur et non ses octets : un `push_back` du côté
     C++ ne laisse pas une vue pendante.
-  - La suite Scry compte 330 tests depuis, contre 291 avant.
+  - La suite Scry compte 357 tests depuis, contre 291 avant.
 - Il ne reste donc **aucune branche en attente** : `main` porte tout, et les
   branches `claude/*`, `feature/*` et `docs/*` du dépôt distant peuvent être
   supprimées.

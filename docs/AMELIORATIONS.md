@@ -15,7 +15,7 @@ connaît le code : **S** ≤ 2 j, **M** 3 à 5 j, **L** 1 à 3 semaines.
 
 Scry fait aujourd'hui ce qu'il promet, sous Linux comme sous Windows : modèle
 fidèle au compilateur, vérification d'ABI, lecture live, Python embarqué sans
-copie, 330 tests. Trois faiblesses dominent :
+copie, 357 tests. Trois faiblesses dominent :
 
 1. **Rien n'est validé automatiquement sur la vraie cible.** MSVC et le
    visualiseur DirectX ont depuis été rejoués à la main, sous `cl` et sous
@@ -25,8 +25,9 @@ copie, 330 tests. Trois faiblesses dominent :
 2. **Le Python embarqué savait seulement lire et écrire des données.** Les
    fonctions du header (B1) et les vues sur `std::vector` (B2) sont faites et
    fusionnées : un script pilote désormais, au lieu de reposer des variables.
-   Reste le **rechargement à chaud** des scripts (B3), qui décide du confort de
-   mise au point.
+   Le **rechargement à chaud** (B3) est fait lui aussi : un scénario corrigé
+   rejoue dans la seconde, sans relancer le simulateur. Cet axe est clos pour
+   l'essentiel ; ne restent que des raffinements (B4, B7 à B9).
 3. **L'outil passe mal à l'échelle d'un vrai header tiers.** Le filtrage des
    types est fait (C1, fusionné) ; restent un parsing à froid lent (9,3 s
    mesurées sur un header qui tire la STL) et un code généré monolithique.
@@ -609,14 +610,16 @@ leur API, quand une des pistes B1, B2 ou D1 les touchera.
 | Phase | Contenu | Durée indicative |
 |---|---|---|
 | **1. Fiabiliser** | A1, ~~A2~~, F1, E1, ~~C1~~ | 1 à 2 semaines |
-| **2. Piloter un simulateur** | ~~B1~~, ~~B2~~, B3, B5, B6 | 1 semaine |
+| **2. Piloter un simulateur** | ~~B1~~, ~~B2~~, ~~B3~~, ~~B5~~, ~~B6~~ | **faite** |
 | **3. Exploiter les séances** | B7, B8, C2, C3, C4, E2, E4 | 4 à 6 semaines |
 | **4. Opportuniste** | A3, A4, A5, B4, B9, C5, C6, D1 à D4, E3, F2 | au fil des besoins |
 
 De la phase 1 il ne reste que **A1**, la CI, et c'est la pièce qui compte :
 A2 a montré que la cible Windows tient, mais rien ne le vérifiera plus si
-personne ne relance la suite à la main. De la phase 2, B1 et B2 sont fusionnées ;
-il reste **B3**, le rechargement à chaud, puis B5 et B6.
+personne ne relance la suite à la main. La **phase 2 est faite** : un script
+embarqué appelle les fonctions du header, lit les conteneurs STL, n'écrit que
+là où on l'y autorise, sait où part son temps, et se recharge sans relancer le
+simulateur. La suite utile est donc du côté de RAVEN, ou de la phase 3.
 
 ---
 
