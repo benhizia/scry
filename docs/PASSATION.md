@@ -13,9 +13,13 @@ Fait et fusionné : parsing castxml + pygccxml, modèle plat, génération C++
 (`static_assert`, introspection), `scry verify` (cl, g++, clang++), héritage,
 commentaires de documentation, diff de modèles JSON, canal SHM de démonstration
 (`scry producer`, `scry watch`), bindings pybind11 et interpréteur Python
-embarqué pour l'autotest, filtrage des types, et `scry raven` (descripteur
+embarqué pour l'autotest, filtrage des types, `scry raven` (descripteur
 `.rvndesc` et glue de publication, `--channel` pour une variable, `--struct`
-pour une struct transportée par le réseau).
+pour une struct transportée par le réseau), et depuis le 30 septembre 2026 les
+**fonctions du header** appelables depuis Python (B1) ainsi que les **vues sur
+`std::vector`** et sur les paires pointeur + compteur (B2). Un script embarqué
+pilote désormais l'application, il ne se contente plus de reposer des
+variables.
 
 ### 1.2 RAVEN (acquisition, enregistrement, visualisation, C++)
 
@@ -50,7 +54,7 @@ MSVC 19.44.35216 · Visual Studio 17 2022 · x64 · Windows SDK 10.0.26100
 | `raven_mcast_tests` | passé, 6,11 s |
 | `test_raven_e2e.py`, `test_raven_gen.py` | 8 tests passés, sur les binaires MSVC |
 | Avertissements | **aucun** en `/W4`, reconstruction propre, cœur et visualiseur (ImGui compris) |
-| Suite Scry complète | 291 tests passés sur ce `main` |
+| Suite Scry complète | 291 tests passés ce jour-là, 330 après la fusion de B1 et B2, chiffres rejoués |
 
 Les commandes, avec les deux pièges du poste :
 
@@ -179,23 +183,25 @@ Dans [RAVEN_CONTOUR.md](RAVEN_CONTOUR.md) :
 - Validation MSVC : **faite** pour RAVEN et pour Scry (§ 1.3), en boucle
   locale seulement. Reste la CI, piste A1 d'[AMELIORATIONS.md](AMELIORATIONS.md) :
   rien n'empêche aujourd'hui cette validation de se périmer au prochain commit.
-- Deux branches de Scry **non fusionnées**, à relire dans cet ordre, la
-  seconde étant bâtie sur la première :
-  - `feature/pybind-fonctions` (1 commit) : piste **B1**. Les fonctions libres
+- Les deux branches de Scry qui restaient sont **fusionnées** depuis (30
+  septembre 2026), dans cet ordre, la seconde étant bâtie sur la première.
+  Résumé pour qui relit l'historique :
+  - `feature/pybind-fonctions` : piste **B1**. Les fonctions libres
     des headers et les méthodes publiques non virtuelles sont exposées en
     Python embarqué (`register_functions`, méthodes sur le `py::class_` de leur
     classe). Un script pilote au lieu de reposer des variables. Règle centrale :
     seule une fonction **définie** dans le header est liée, sinon le module ne
     se lierait pas ; un motif sans joker dans `[pybind] functions` vaut
     autorisation explicite pour les autres.
-  - `feature/pybind-vues-stl` (2 commits) : piste **B2**. `std::vector` exposé
+  - `feature/pybind-vues-stl` : piste **B2**. `std::vector` exposé
     en vue numpy (éléments numériques) ou en `VectorView` (structures, enums,
     chaînes), et paires pointeur + compteur déclarées dans `[pybind] spans`.
     `VectorView` garde le conteneur et non ses octets : un `push_back` du côté
     C++ ne laisse pas une vue pendante.
-  - 329 tests passent avec les deux, contre 291 sans.
-- Toutes les autres branches `claude/*` et `feature/*` sont fusionnées et
-  peuvent être supprimées.
+  - La suite Scry compte 330 tests depuis, contre 291 avant.
+- Il ne reste donc **aucune branche en attente** : `main` porte tout, et les
+  branches `claude/*`, `feature/*` et `docs/*` du dépôt distant peuvent être
+  supprimées.
 - La PR 1 d'InterfaceInspector (SwitchSpy) est toujours ouverte.
 
 ## 4. Documents de référence
