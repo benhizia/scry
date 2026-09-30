@@ -39,7 +39,7 @@ copie, 330 tests. Trois faiblesses dominent :
 | B1 | Fonctions du header exposées en Python | passer de « lire/écrire » à « piloter » | M | **fait** |
 | B2 | `std::vector`, `std::string` et pointeurs+taille en vues Python | les interfaces réelles en sont pleines | M | **fait** |
 | C1 | Filtrage des types (IHM, CLI, config) | conditionne l'usage sur un vrai header | S | **fait** |
-| B3 | Rechargement à chaud des scripts embarqués | cycle de mise au point en secondes, sans relancer le simulateur | S |
+| B3 | Rechargement à chaud des scripts embarqués | cycle de mise au point en secondes, sans relancer le simulateur | S | **fait** |
 
 ---
 
@@ -94,7 +94,7 @@ copie, 330 tests. Trois faiblesses dominent :
 | A5 | Offset des bases virtuelles sur l'objet complet | Fiabilité | 2 | M | P3 |
 | B1 | Fonctions du header exposées en Python | Python embarqué | 5 | M | P1, fait |
 | B2 | Vues Python sur `std::vector`, `std::string`, pointeur + taille | Python embarqué | 5 | M | P1, fait |
-| B3 | Rechargement à chaud des scripts | Python embarqué | 4 | S | P1 |
+| B3 | Rechargement à chaud des scripts | Python embarqué | 4 | S | P1, fait |
 | B4 | Vue numpy structurée d'une struct entière | Python embarqué | 4 | M | P2 |
 | B5 | Budget de temps par tick et profilage | Python embarqué | 4 | S | P2 |
 | B6 | Mode lecture seule et liste blanche d'écriture | Python embarqué | 3 | S | P2 |
@@ -295,13 +295,39 @@ non une heuristique. Une déclaration qui ne désigne rien donne un commentaire,
 pas un C++ qui ne compile pas : une faute de frappe dans `scry.ini` ne doit pas
 casser le build de l'application.
 
-#### B3. Rechargement à chaud des scripts · P1 · S
+#### B3. Rechargement à chaud des scripts · P1 · S · **fait**
 
 **Problème.** Modifier un script impose de relancer le simulateur.
 
 **Proposition.** Dans `autotest_embed.h` et un hôte minimal générique :
 surveiller la date des scripts, `importlib.reload` entre deux ticks, garder
 l'état du module `sut` (il n'est que des vues). Commande `sut.reload()` en plus.
+
+**Fait.** Mode veille : `Runner(watch=True)` et `HostConfig::watch`. Le runner
+ne se déclare plus terminé, il compare la date et la taille des `test_*.py`
+tous les `watch_every` cycles et repart d'une passe neuve dès qu'un seul
+change. `Host::reload()` force la même chose tout de suite, pour la brancher
+sur autre chose qu'une horloge : une touche, une commande réseau.
+
+Trois décisions à retenir. **`tick()` ne rend jamais `false` en veille**, sinon
+l'application s'arrêterait avant d'avoir pu recharger quoi que ce soit. **Un
+scénario en cours est abandonné** : sa coroutine tient des fonctions de
+l'ancien module, et la reprendre exécuterait du code disparu. **Les résultats
+sont remplacés et non cumulés**, le rapport JUnit étant réécrit à chaque passe,
+car ceux de la passe précédente décrivent du code qui n'existe plus.
+
+Plutôt qu'`importlib.reload`, le rechargement purge les modules
+`autotest_scenarios.*` et relit le dossier : un fichier **ajouté ou supprimé**
+est alors vu, ce qu'un `reload` ne verrait pas. Limite assumée et documentée :
+un module d'aide importé sous son propre nom n'est pas relu.
+
+L'idée d'une commande `sut.reload()` a été écartée : `sut` est généré et n'a pas
+à porter de plomberie de runtime. C'est l'hôte qui expose `reload()`.
+
+**Preuve.** Neuf tests dans `autotest/tests/test_runner.py`, et un essai sur la
+vraie démo compilée par MSVC : passe 1 verte, fichier modifié pendant que
+l'application tourne, passe 2 rouge avec le nouveau code, le compteur de cycles
+passant de 3 à 102 sans que le processus ait été relancé.
 
 #### B4. Vue numpy structurée d'une struct entière · P2 · M
 

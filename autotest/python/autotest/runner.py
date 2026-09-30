@@ -8,6 +8,11 @@ Tout est donc deterministe, et un tick correspond exactement a un cycle.
 
 Les scenarios s'executent l'un apres l'autre, dans l'ordre de declaration. Le
 suivant demarre au tick qui suit la fin du precedent.
+
+Avec watch=True, le runner reste en veille au lieu de se declarer termine : il
+surveille la date des fichiers test_*.py et repart d'une passe neuve des qu'un
+seul change. On corrige un scenario, on l'enregistre, et il rejoue dans la
+seconde, sans relancer le simulateur, qui garde tout son etat.
 """
 
 import importlib.util
@@ -21,6 +26,11 @@ from typing import Callable, Dict, List, Optional
 from autotest import junit
 
 PASSED, FAILED, ERROR = "passed", "failed", "error"
+
+# Prefixe des modules de scenarios dans sys.modules. Le rechargement purge
+# tout ce qui commence par la ; les modules d'aide importes par un scenario
+# sous leur propre nom, eux, ne sont pas relus.
+_MODULE_PREFIX = "autotest_scenarios."
 
 # Runner en cours de tick : check() et record() s'y rattachent.
 _ACTIVE = None
@@ -178,9 +188,10 @@ class Runner(object):
 
     def __init__(self, scenarios="scenarios", sut=None, report: Optional[str] = None,
                  select: Optional[str] = None, tick_budget_ms: float = 0.0,
-                 stop_on_failure: bool = False, sut_module: str = "sut", log=print):
-        self._pending = [s for s in self.discover(scenarios)
-                         if not select or select in s.name or select in s.tags]
+                 stop_on_failure: bool = False, sut_module: str = "sut", log=print,
+                 watch: bool = False, watch_every: int = 25):
+        self._source = scenarios
+        self._select = select
         self.sut = sut
         self.sut_module = sut_module
         self.report = report
@@ -192,35 +203,123 @@ class Runner(object):
         self.finished = False
         self._current = None        # type: Optional[_Run]
         self._closed = False
-        self.log("[autotest] %d scenario(s)" % len(self._pending))
+        # Mode veille : le runner ne se declare jamais termine, il relance une
+        # passe des qu'un fichier de scenario change. watch_every espace les
+        # stat() du disque, comptes en cycles de l'application.
+        self.watch = bool(watch)
+        self.watch_every = max(1, int(watch_every))
+        self.passes = 1
+        self._stamps = self._file_stamps()
+        self._pending = self._select_scenarios()
+        self.log("[autotest] %d scenario(s)%s"
+                 % (len(self._pending), ", veille sur les fichiers" if self.watch else ""))
 
     # -- decouverte ---------------------------------------------------------
+    @staticmethod
+    def scenario_files(source) -> List[str]:
+        """Fichiers test_*.py derriere 'source', [] si source n'est pas un
+        chemin. C'est ce que le mode veille surveille."""
+        if isinstance(source, (list, tuple)) or inspect.ismodule(source):
+            return []
+        path = os.fspath(source)
+        if os.path.isdir(path):
+            return sorted(os.path.join(path, n) for n in os.listdir(path)
+                          if n.startswith("test_") and n.endswith(".py"))
+        if os.path.isfile(path):
+            return [path]
+        raise FileNotFoundError("scenarios introuvables : %s" % path)
+
     @staticmethod
     def discover(source) -> List[Scenario]:
         if isinstance(source, (list, tuple)):
             return [_as_scenario(item) for item in source]
         if inspect.ismodule(source):
             return _from_module(source)
-        path = os.fspath(source)
-        if os.path.isdir(path):
-            files = sorted(os.path.join(path, n) for n in os.listdir(path)
-                           if n.startswith("test_") and n.endswith(".py"))
-        elif os.path.isfile(path):
-            files = [path]
-        else:
-            raise FileNotFoundError("scenarios introuvables : %s" % path)
         found = []
-        for file in files:
+        for file in Runner.scenario_files(source):
             found.extend(_from_module(_load(file)))
         return found
 
+    # -- rechargement a chaud --------------------------------------------------
+    def _select_scenarios(self) -> List[Scenario]:
+        return [s for s in self.discover(self._source)
+                if not self._select or self._select in s.name or self._select in s.tags]
+
+    def _file_stamps(self) -> Dict[str, tuple]:
+        """(mtime, taille) par fichier de scenario. La taille double le mtime :
+        deux ecritures dans la meme granularite d'horodatage se distinguent
+        alors quand le contenu a change de longueur."""
+        stamps = {}
+        try:
+            files = self.scenario_files(self._source)
+        except FileNotFoundError:
+            return stamps
+        for path in files:
+            try:
+                st = os.stat(path)
+                stamps[path] = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                pass
+        return stamps
+
+    def reload(self) -> int:
+        """Relit les scenarios sur le disque et repart d'une passe neuve.
+
+        Le scenario en cours est abandonne : sa coroutine tient des fonctions de
+        l'ancien module, et la reprendre executerait l'ancien code. Les
+        resultats de la passe precedente sont REMPLACES et non cumules, car ils
+        decrivent du code qui n'existe plus ; le rapport est reecrit a la fin de
+        chaque passe.
+
+        Le compteur de cycles, lui, continue : c'est celui de l'application, que
+        le rechargement n'interrompt pas. C'est tout l'interet, d'ailleurs : le
+        simulateur garde son etat, on ne recharge que les scenarios.
+
+        Retourne le numero de la nouvelle passe.
+        """
+        if self._current is not None and self._current.coro is not None:
+            self._current.coro.close()
+        self._current = None
+        # Purger les modules deja charges : les relire suffit a prendre en
+        # compte un fichier modifie, ajoute ou supprime, ce qu'un
+        # importlib.reload ne ferait pas pour les deux derniers cas.
+        for name in [n for n in sys.modules if n.startswith(_MODULE_PREFIX)]:
+            del sys.modules[name]
+        self._stamps = self._file_stamps()
+        self._pending = self._select_scenarios()
+        self.results = []
+        self.finished = False
+        self._closed = False
+        self.passes += 1
+        self.log("[autotest] passe %d : %d scenario(s) recharge(s)"
+                 % (self.passes, len(self._pending)))
+        return self.passes
+
+    def _poll(self):
+        """Relance une passe si un fichier de scenario a bouge."""
+        stamps = self._file_stamps()
+        if stamps == self._stamps:
+            return
+        changed = sorted(set(stamps) ^ set(self._stamps)
+                         | {p for p in stamps if p in self._stamps
+                            and stamps[p] != self._stamps[p]})
+        self.log("[autotest] modifie : %s"
+                 % ", ".join(os.path.basename(p) for p in changed))
+        self.reload()
+
     # -- boucle ---------------------------------------------------------------
     def tick(self) -> bool:
-        """Un cycle de l'application. Retourne False quand tout est termine."""
+        """Un cycle de l'application. Retourne False quand tout est termine.
+
+        En mode veille, il ne retourne jamais False : l'application continue de
+        tourner, et le runner attend une modification des scenarios.
+        """
         global _ACTIVE
-        if self.finished:
-            return False
         self.cycle += 1
+        if self.watch and self.cycle % self.watch_every == 0:
+            self._poll()
+        if self.finished:
+            return bool(self.watch)
         start = time.perf_counter()
         _ACTIVE = self
         try:
@@ -233,7 +332,8 @@ class Runner(object):
                 self._current.result.slow_ticks += 1
         if self.finished:
             self._close()
-        return not self.finished
+            return bool(self.watch)
+        return True
 
     def run_all(self, app_cycle: Callable[[], None] = None, max_cycles: int = 1000000) -> int:
         """Boucle de commodite hors application : app_cycle() puis tick()."""
@@ -370,6 +470,8 @@ class Runner(object):
         if self.report:
             junit.write(self.results, self.report)
             self.log("[autotest] rapport : %s" % os.path.abspath(self.report))
+        if self.watch:
+            self.log("[autotest] veille : en attente d'une modification des scenarios")
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +492,7 @@ def _from_module(module) -> List[Scenario]:
 
 
 def _load(path: str):
-    name = "autotest_scenarios.%s" % os.path.splitext(os.path.basename(path))[0]
+    name = _MODULE_PREFIX + os.path.splitext(os.path.basename(path))[0]
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module

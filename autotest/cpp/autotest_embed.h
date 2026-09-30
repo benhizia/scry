@@ -23,6 +23,12 @@
 //  scry_module.generated.cpp, qui expose tous les types et toutes les
 //  variables globales des headers, par reference.
 //
+//  Mise au point : avec cfg.watch = true, l'autotest ne se declare jamais
+//  termine. Il surveille la date des fichiers de scenarios et rejoue une passe
+//  des qu'un seul change ; host.reload() force la meme chose tout de suite. On
+//  corrige un scenario et il rejoue dans la seconde, le simulateur gardant son
+//  etat. C'est l'application qui decide alors quand s'arreter.
+//
 //  Garanties :
 //    - tick() ne laisse jamais sortir d'exception : une erreur Python arrete
 //      l'autotest, pas l'application ;
@@ -64,6 +70,13 @@ struct HostConfig
     double tick_budget_ms = 0.0;
     // Arreter les scenarios au premier echec.
     bool stop_on_failure = false;
+    // Veille : au lieu de se declarer termine, l'autotest surveille la date des
+    // fichiers de scenarios et rejoue une passe des qu'un seul change. tick()
+    // ne retourne alors jamais false, et c'est l'application qui decide quand
+    // s'arreter. Pour mettre un scenario au point sans relancer le simulateur.
+    bool watch = false;
+    // Espacement des stat() du disque, en cycles de l'application.
+    int watch_every = 25;
 };
 
 class Host
@@ -97,7 +110,8 @@ public:
         runner_ = py::module_::import("autotest").attr("Runner")(
             cfg.scenarios, py::arg("report") = report, py::arg("select") = select,
             py::arg("tick_budget_ms") = cfg.tick_budget_ms,
-            py::arg("stop_on_failure") = cfg.stop_on_failure);
+            py::arg("stop_on_failure") = cfg.stop_on_failure,
+            py::arg("watch") = cfg.watch, py::arg("watch_every") = cfg.watch_every);
     }
 
     ~Host()
@@ -128,6 +142,27 @@ public:
     }
 
     bool finished() const { return finished_; }
+
+    // Relit les scenarios et repart d'une passe neuve, sans attendre que la
+    // veille le remarque. A brancher sur ce que l'on veut : une touche, une
+    // commande reseau, un fichier temoin. Le simulateur garde son etat.
+    // Retourne false si le rechargement a echoue, auquel cas l'autotest est
+    // arrete comme apres n'importe quelle erreur Python.
+    bool reload() noexcept
+    {
+        try {
+            runner_.attr("reload")();
+            finished_ = false;
+            return true;
+        } catch (const py::error_already_set& e) {
+            std::fprintf(stderr, "[autotest] rechargement impossible : %s\n", e.what());
+            broken_ = finished_ = true;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[autotest] rechargement impossible : %s\n", e.what());
+            broken_ = finished_ = true;
+        }
+        return false;
+    }
 
     // 0 : tout est passe ; 1 : au moins un scenario en echec ; 2 : erreur de
     // l'autotest lui-meme.
