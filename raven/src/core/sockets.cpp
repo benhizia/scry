@@ -152,6 +152,42 @@ bool TcpSocket::recv_all(void* buf, size_t size, int timeout_ms) {
     return true;
 }
 
+bool TcpSocket::send_all_raw(const void* data, size_t size, int timeout_ms) const {
+    const intptr_t fd = fd_;              // lu une fois : l'autre fil peut fermer
+    if (fd < 0) return false;
+    const char* p = static_cast<const char*>(data);
+    while (size > 0) {
+        const int n = ::send(fd, p, int(size), RV_NOSIGNAL);
+        if (n > 0) { p += n; size -= size_t(n); continue; }
+        if (n < 0 && would_block()) {
+            if (!wait_writable(fd, timeout_ms)) return false;
+            continue;
+        }
+        return false;                     // -1 franc, ou 0 : plus rien a faire
+    }
+    return true;
+}
+
+Io TcpSocket::recv_exact_raw(void* buf, size_t size, int timeout_ms) const {
+    const intptr_t fd = fd_;
+    if (fd < 0) return Io::Closed;
+    char* p = static_cast<char*>(buf);
+    size_t got = 0;
+    while (got < size) {
+        if (!wait_readable(fd, timeout_ms)) {
+            // Rien du tout : l'appelant peut souffler et regarder s'il doit
+            // s'arreter. Un message deja commence, en revanche, s'attend.
+            if (got == 0) return Io::Timeout;
+            continue;
+        }
+        const int n = ::recv(fd, p + got, int(size - got), 0);
+        if (n > 0) { got += size_t(n); continue; }
+        if (n < 0 && would_block()) continue;
+        return Io::Closed;                // 0 : ferme par le pair ; -1 : erreur
+    }
+    return Io::Ok;
+}
+
 Endpoint TcpSocket::peer() const {
     sockaddr_in a;
     socklen_t len = sizeof a;

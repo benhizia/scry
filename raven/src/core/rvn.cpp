@@ -12,6 +12,15 @@
 
 namespace raven {
 
+const char* direction_name(Direction d) {
+    switch (d) {
+        case Direction::AtoB: return "A>B";
+        case Direction::BtoA: return "B>A";
+        default: return "";
+    }
+}
+
+
 static const char kMagic[] = "RAVEN-RVN 2\n";
 static const char kMagicV1[] = "RAVEN-RVN 1\n";
 static const uint32_t kHead = 24;
@@ -44,13 +53,17 @@ bool RvnWriter::open(const std::string& path, const Descriptor& d,
     return true;
 }
 
-bool RvnWriter::write(uint64_t frame_no, uint64_t t_ns, const unsigned char* frame, int channel) {
+bool RvnWriter::write(uint64_t frame_no, uint64_t t_ns, const unsigned char* frame, int channel,
+                      Direction dir) {
     if (!f_) return false;
     unsigned char* p = buf_.data();
     std::memcpy(p, &frame_no, 8);
     std::memcpy(p + 8, &t_ns, 8);
     const int32_t ch = channel;
-    const uint32_t reserved = 0;
+    // Le sens tient dans le premier octet du u32 jusqu'ici nul : la version du
+    // format ne change pas, et un fichier sans relais reste octet pour octet
+    // celui qu'ecrivait la version precedente.
+    const uint32_t reserved = uint32_t(dir);
     std::memcpy(p + 16, &ch, 4);
     std::memcpy(p + 20, &reserved, 4);
     p += kHead;
@@ -126,8 +139,14 @@ bool RvnReader::read(uint64_t n, uint64_t& frame_no, uint64_t& t_ns,
     std::memcpy(&frame_no, buf_.data(), 8);
     std::memcpy(&t_ns, buf_.data() + 8, 8);
     int32_t ch = -1;
-    if (head_ >= 24) std::memcpy(&ch, buf_.data() + 16, 4);
+    uint32_t reserved = 0;
+    if (head_ >= 24) {
+        std::memcpy(&ch, buf_.data() + 16, 4);
+        std::memcpy(&reserved, buf_.data() + 20, 4);
+    }
     last_channel_ = ch;
+    const uint8_t d = uint8_t(reserved & 0xFF);
+    last_dir_ = d <= uint8_t(Direction::BtoA) ? Direction(d) : Direction::None;
     fields.clear();
     for (uint32_t p : field_pos_) fields.push_back(buf_.data() + p);
     return true;

@@ -53,6 +53,11 @@ protected:
     std::string error_;
 };
 
+// Resultat d'une entree-sortie du chemin partage, ou l'on ne peut pas se
+// contenter de "-1 quelque chose a casse" : un delai ecoule et une connexion
+// fermee demandent deux conduites differentes.
+enum class Io { Ok, Timeout, Closed };
+
 class TcpSocket : public Socket {
 public:
     TcpSocket() = default;
@@ -64,6 +69,23 @@ public:
     // Lit exactement 'size' octets (un message de taille connue), ou false.
     bool recv_all(void* buf, size_t size, int timeout_ms);
     Endpoint peer() const;
+
+    // --- chemin d'un relais : deux fils, une seule socket ------------------
+    // Un relais a un fil par sens. Chaque socket est alors LUE par un fil et
+    // ECRITE par l'autre, ce que le systeme accepte sans reserve. Ce que le
+    // systeme n'accepte pas, c'est que l'un ferme la socket sous les pieds de
+    // l'autre, ni que les deux ecrivent error_ en meme temps.
+    //
+    // Ces deux methodes ne ferment donc rien et ne touchent pas a error_ :
+    // elles rapportent, et c'est tout. La regle qui en decoule, et que le
+    // relais applique, est simple : PENDANT une session, personne ne ferme ;
+    // c'est le fil de supervision qui ferme, entre deux sessions, une fois les
+    // fils de sens arretes.
+    bool send_all_raw(const void* data, size_t size, int timeout_ms) const;
+    // Lit un message entier. Timeout seulement si RIEN n'est arrive : un
+    // message commence est attendu jusqu'au bout, car le decouper n'aurait
+    // aucun sens.
+    Io recv_exact_raw(void* buf, size_t size, int timeout_ms) const;
 
 private:
     friend class TcpListener;

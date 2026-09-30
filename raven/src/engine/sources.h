@@ -10,5 +10,7 @@ namespace raven {
 
 std::unique_ptr<ISource> make_shm_source(const std::string& arg, const Descriptor& d);
 std::unique_ptr<ISource> make_mcast_source(const std::string& arg, const Descriptor& d);
+std::unique_ptr<ISource> make_tcp_relay(const std::string& arg, const Descriptor& d);
+std::unique_ptr<ISource> make_udp_relay(const std::string& arg, const Descriptor& d);
 
 } // namespace raven
