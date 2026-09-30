@@ -102,6 +102,59 @@ def _elem_base(elem_type: str) -> str:
     return re.sub(r"\[\d*\]", "", elem_type or "").strip()
 
 
+def vector_mode(elem: Optional[model.Field]) -> str:
+    """Comment exposer un std::vector : 'numeric', 'view', ou '' si on ne sait pas.
+
+    Numerique : vue numpy sur data(). Autre chose de nommable, structure,
+    enum ou std::string : sequence dont les elements sont des references.
+    std::vector<bool> est mis dehors : c'est une specialisation a champs de
+    bits, sans data(), qu'aucune vue ne peut representer.
+    """
+    if elem is None:
+        return ""
+    if elem.kind == model.FUNDAMENTAL:
+        return "" if model.canonical_type(elem.type_name, elem.size) == "bool" else "numeric"
+    if elem.kind == model.ENUM or elem.kind in model.AGGREGATES:
+        return "view"
+    return ""
+
+
+def _flat_fields(fields: Sequence[model.Field]) -> Dict[str, model.Field]:
+    """Membres accessibles par leur nom depuis la classe, unions et structs
+    anonymes aplatis : c'est ainsi que le C++ les nomme."""
+    out = {}
+    for f in fields:
+        if f.kind in model.AGGREGATES and not f.name:
+            out.update(_flat_fields(f.children))
+        elif f.name:
+            out.setdefault(f.name, f)
+    return out
+
+
+def _why_no_member_pointer(f: model.Field) -> str:
+    """Pourquoi '&C::membre' ne s'ecrit pas, ou "" si rien ne l'empeche."""
+    if getattr(f, "access", "public") != "public":
+        return "un membre %s, innommable hors de la classe" % f.access
+    if f.is_static:
+        return "un membre statique, hors instance"
+    if f.is_bitfield:
+        return "un champ de bits, dont on ne peut pas prendre l'adresse"
+    return ""
+
+
+def _numeric_pointee(type_name: str) -> bool:
+    """'double const *' oui, 'void *' non, 'double * *' non.
+
+    Un span sur un pointeur vers un fondamental devient une vue numpy ; il
+    faut donc s'assurer que le C++ genere saura en faire une, sans quoi le
+    module ne compilerait pas.
+    """
+    if (type_name or "").count("*") != 1:
+        return False
+    bare = type_name.replace("*", "").replace("const", "").replace("volatile", "").strip()
+    return model.canonical_type(bare) in model.PRINTF_FORMATS
+
+
 def _scalar_hint(type_name: str, size: Optional[int]) -> str:
     canon = model.canonical_type(type_name, size)
     if canon == "bool":
@@ -189,13 +242,20 @@ class Binder(object):
 
     def __init__(self, structs: Sequence[model.Struct],
                  variables: Sequence[model.Variable] = (),
-                 functions: Sequence[BoundFunction] = ()):
+                 functions: Sequence[BoundFunction] = (),
+                 spans: Optional[Dict[Tuple[str, str], str]] = None):
         self.types = []               # type: List[BoundType]
         self.by_key = {}              # type: Dict[str, BoundType]
         self.enums = []               # type: List[BoundEnum]
         self.enum_by_key = {}         # type: Dict[str, BoundEnum]
         self.views = []               # type: List[Tuple[BoundType, str]]
         self._view_keys = set()
+        # Un enregistrement par (type de std::vector, constance), pas par
+        # membre : deux membres du meme type partagent une seule classe de vue
+        # Python. La constance entre dans la cle parce qu'elle change ce que
+        # l'on peut rendre : un vector const d'agregats n'est pas exposable.
+        self.vectors = {}             # type: Dict[Tuple[str, bool], Dict]
+        self.spans = dict(spans or {})
         self.globals = [BoundGlobal(v) for v in variables]   # type: List[BoundGlobal]
         self.functions = list(functions)   # type: List[BoundFunction]
         for s in structs:
@@ -213,6 +273,9 @@ class Binder(object):
             self._enum(f)
         if f.kind in model.AGGREGATES:
             q = f.qualified_type
+            if f.container == "vector":
+                self._vector(f, "decltype(%s)" % g.expr)
+                return
             if q and _is_std(q):
                 return
             if q:
@@ -268,6 +331,12 @@ class Binder(object):
     def _discover(self, owner: BoundType, f: model.Field):
         if f.is_static:
             return
+        if getattr(f, "access", "public") != "public":
+            # Meme regle qu'a l'emission : un membre non public ne peut pas
+            # etre nomme hors de la classe, pas meme dans un decltype. Le
+            # traverser ici ferait generer un C++ qui ne compile pas des que
+            # include_non_public le fait entrer dans le modele.
+            return
         if f.kind in model.AGGREGATES and not f.name:
             for child in f.children:            # union ou struct anonyme promue
                 self._discover(owner, child)
@@ -276,6 +345,9 @@ class Binder(object):
             self._enum(f)
         if f.kind in model.AGGREGATES:
             q = f.qualified_type
+            if f.container == "vector":
+                self._vector(f, "decltype(%s::%s)" % (owner.alias, f.name))
+                return
             if _is_std(q):
                 if q.startswith("std::array<"):
                     self._std_array(owner, f)
@@ -320,6 +392,120 @@ class Binder(object):
         if t.key not in self._view_keys:
             self._view_keys.add(t.key)
             self.views.append((t, ""))
+
+    def _vector(self, f: model.Field, cpp: str):
+        """Note un type de std::vector a exposer, une seule fois par type.
+
+        'cpp' vient du membre ou de la variable elle-meme, par decltype, et
+        jamais d'une reecriture de 'std::vector<...>' : l'allocateur et les
+        alias resteraient a deviner, et une vue enregistree pour un type voisin
+        ne serait pas trouvee a l'execution. Si l'element est liable ne se sait
+        qu'a la fin, quand tous les types sont connus : voir _resolve_vector.
+        """
+        key = (f.qualified_type, bool(f.is_const))
+        if key in self.vectors:
+            return
+        elem = f.elem
+        if elem is not None and elem.kind == model.ENUM and elem.enum_type:
+            self._enum(elem)
+        if (elem is not None and elem.kind in model.AGGREGATES and elem.qualified_type
+                and not _is_std(elem.qualified_type) and elem.children):
+            # Un type imbrique peut n'apparaitre que la, comme element du
+            # vector : c'est ici qu'il entre dans le module, sinon le membre
+            # serait ecarte pour un type « absent ».
+            q = elem.qualified_type
+            self._type(q, q, elem.kind, q, elem.children, None, None)
+        self.vectors[key] = {
+            "key": key, "cpp": cpp, "elem": elem,
+            "mode": vector_mode(elem), "is_const": f.is_const, "name": "", "reason": "",
+        }
+
+    def _resolve_spans(self):
+        """Verifie chaque paire de [pybind] spans, et enregistre sa vue.
+
+        Un motif qui ne designe rien est dit en commentaire dans le code
+        genere, plutot que de produire un C++ qui ne compile pas : une faute de
+        frappe dans scry.ini ne doit pas casser le build de l'application.
+        """
+        self._span_info = {}          # type: Dict[Tuple[str, str], Dict]
+        self._span_notes = {}         # type: Dict[str, List[str]]
+        for (owner, member), count in sorted(self.spans.items()):
+            info = {"count": count, "hint": "", "reason": ""}
+            self._span_info[(owner, member)] = info
+            t = self.by_key.get(owner)
+            if t is None:
+                info["reason"] = "classe %s absente du module" % owner
+                continue
+            fields = _flat_fields(t.fields)
+            ptr = fields.get(member)
+            if ptr is None or ptr.kind != model.POINTER:
+                info["reason"] = "'%s' n'est pas un membre pointeur de %s" % (member, owner)
+                continue
+            counter = fields.get(count)
+            if counter is None or counter.kind != model.FUNDAMENTAL:
+                info["reason"] = "compteur '%s' introuvable ou non entier dans %s" % (count, owner)
+                continue
+            # span_member prend deux pointeurs sur membre : un membre non
+            # public, statique ou champ de bits n'en a pas, et le C++ genere
+            # ne compilerait pas.
+            refus = next((("'%s' est %s" % (f.name, _why_no_member_pointer(f)))
+                          for f in (ptr, counter) if _why_no_member_pointer(f)), "")
+            if refus:
+                info["reason"] = refus
+                continue
+            if ptr.qualified_type:
+                elem = self.by_key.get(ptr.qualified_type)
+                if elem is None:
+                    info["reason"] = "type pointe %s absent du module" % ptr.qualified_type
+                    continue
+                self._view(elem)
+                info["hint"] = "ArrayView[%s]" % elem.py_path
+            elif _numeric_pointee(ptr.type_name):
+                # Pointeur vers un fondamental : vue numpy, comme un vector
+                # numerique. Le C++ genere choisit par if constexpr.
+                info["hint"] = "numpy.ndarray"
+            else:
+                info["reason"] = "pointeur vers %s : ni structure decrite, ni nombre" \
+                    % ptr.type_name
+        # Un span declare mais inutilisable se lit dans le code genere, meme
+        # quand le membre vise ne passe pas par la branche des pointeurs : une
+        # faute de frappe dans scry.ini ne doit pas rester muette.
+        for (owner, member), info in sorted(self._span_info.items()):
+            if info["reason"]:
+                self._span_notes.setdefault(owner, []).append(
+                    "// %s::%s : [pybind] spans : %s" % (owner, member, info["reason"]))
+
+    def _resolve_vector(self, rec: Dict, used: set):
+        """Nomme la classe de vue, ou dit pourquoi le vector n'est pas liable."""
+        elem, mode = rec["elem"], rec["mode"]
+        if not mode:
+            if elem is None:
+                rec["reason"] = "std::vector dont l'element n'a pas ete decrit"
+            elif elem.kind == model.FUNDAMENTAL:
+                rec["reason"] = ("std::vector<bool> : specialisation a champs de bits,"
+                                 " sans data() a exposer")
+            else:
+                rec["reason"] = "std::vector d'un element non gere (%s)" % elem.type_name
+            return
+        ok, detail = self._elem_hint(elem)
+        if not ok:
+            rec["reason"] = "std::vector : %s" % detail
+            return
+        rec["hint"] = detail
+        if mode == "numeric":
+            return
+        if rec["is_const"]:
+            # Une seule classe de vue par type d'element : la rendre pour un
+            # vector const laisserait ecrire dedans. On prefere le dire.
+            rec["reason"] = "std::vector const d'elements non numeriques : vue non rendue"
+            return
+        name = "_VectorView_%s" % re.sub(r"\W+", "_", detail).strip("_")
+        # Deux types d'element de meme nom Python (un homonyme dans un autre
+        # namespace) ne doivent pas se voler leur classe de vue.
+        while name in used:
+            name += "_"
+        used.add(name)
+        rec["name"] = name
 
     # -- noms, portees, membres ---------------------------------------------
     def _finalize(self):
@@ -371,6 +557,13 @@ class Binder(object):
                 prefix = ns_py.get(e.namespace, "")
                 e.py_path = "%s.%s" % (prefix, e.py_name) if prefix else e.py_name
 
+        # Les vues de conteneurs se resolvent ici, et pas a la decouverte : un
+        # element peut etre decrit par une structure vue plus tard.
+        names = set()
+        for rec in self.vectors.values():
+            self._resolve_vector(rec, names)
+        self._resolve_spans()
+
         used = set()
         views = []
         for t, _ in self.views:
@@ -384,10 +577,14 @@ class Binder(object):
         self._bind_functions()
         for t in self.types:
             self._bind_fields(t, t.fields, flattened=False)
+            t.lines.extend(self._span_notes.pop(t.key, []))
             # Les methodes viennent apres les donnees et avant les services :
             # __scry_fields__ ne parle que des membres.
             t.lines.extend(self._method_lines.get(t.key, []))
             self._services(t)
+        # Ce qui reste vise une classe absente du module : sans bloc de classe
+        # ou l'ecrire, le commentaire part avec les fonctions.
+        self.notes = [line for lines in self._span_notes.values() for line in lines]
         for g in self.globals:
             g.line, g.hint = self._global(g)
             g.module = ns_py.get(g.namespace, "")
@@ -472,6 +669,14 @@ class Binder(object):
             return "// %s : tableau de %s non gere" % (g.var.qualified_name, f.elem_type), ""
         if f.kind in model.AGGREGATES:
             q = f.qualified_type
+            if f.container == "vector":
+                rec = self.vectors.get((q, bool(f.is_const)), {})
+                if rec.get("reason") or not rec:
+                    return ("// %s : %s" % (g.var.qualified_name,
+                                            rec.get("reason", "std::vector non decrit"))), ""
+                return (line("vector"),
+                        "numpy.ndarray" if rec["mode"] == "numeric"
+                        else "VectorView[%s]" % rec["hint"])
             if _is_std_string(q):
                 return line("value"), "str"
             if q.startswith("std::array<"):
@@ -581,27 +786,33 @@ class Binder(object):
             return (True, "None") if is_return else (False, "void en argument")
         if ref.is_cstring:
             return True, "str"
-        base = ref.base
-        if base.kind == model.FUNDAMENTAL:
-            if ref.is_pointer:
-                return False, "pointeur vers %s non gere" % base.type_name
-            return True, _scalar_hint(base.type_name, base.size)
-        if base.kind == model.ENUM:
-            e = self.enum_by_key.get(base.enum_type)
+        if ref.is_pointer and ref.base.kind == model.FUNDAMENTAL:
+            return False, "pointeur vers %s non gere" % ref.base.type_name
+        return self._elem_hint(ref.base)
+
+    def _elem_hint(self, elem: Optional[model.Field]) -> Tuple[bool, str]:
+        """(liable, indication de type Python) d'un type NU : argument, retour,
+        element de conteneur. Un type doit etre enregistre pour etre nomme."""
+        if elem is None:
+            return False, "type inconnu"
+        if elem.kind == model.FUNDAMENTAL:
+            return True, _scalar_hint(elem.type_name, elem.size)
+        if elem.kind == model.ENUM:
+            e = self.enum_by_key.get(elem.enum_type)
             if e is None:
-                return False, "enum %s non enregistree" % (base.enum_type or base.type_name)
+                return False, "enum %s non enregistree" % (elem.enum_type or elem.type_name)
             return True, e.py_path
-        if base.kind in model.AGGREGATES:
-            q = base.qualified_type
+        if elem.kind in model.AGGREGATES:
+            q = elem.qualified_type
             if _is_std_string(q):
                 return True, "str"
             if _is_std(q):
                 return False, "%s non liee (STL, pas un POD)" % q.split("<")[0]
             t = self.by_key.get(q)
             if t is None:
-                return False, "type %s absent du module" % (q or base.type_name)
+                return False, "type %s absent du module" % (q or elem.type_name)
             return True, t.py_path
-        return False, "type non gere (%s)" % ref.cpp
+        return False, "type non gere (%s)" % elem.type_name
 
     # Defaut reproductible tel quel : litteral, ou nom qualifie d'enumerateur.
     # Tout le reste ('(Mode)0', '{}', un appel) risquerait de ne pas compiler,
@@ -719,12 +930,25 @@ class Binder(object):
                 return scalar_prop, hint
             return 'detail::field(%s, "%s", &%s::%s);' % (c, py, O, name), hint
         if f.kind == model.POINTER:
+            span = self._span_info.get((t.qualified or t.key, name))
+            if span is not None and not span["reason"]:
+                return ('detail::span_member(%s, "%s", &%s::%s, &%s::%s);'
+                        % (c, py, O, name, O, span["count"]), span["hint"])
             return ('%s.def_property_readonly("%s", [](const %s& o) { return '
                     'reinterpret_cast<std::uintptr_t>(o.%s); });' % (c, py, O, name), "int")
         if f.kind == model.ARRAY:
             return self._array(t, f, O, c, name, py)
         if f.kind in model.AGGREGATES:
             q = f.qualified_type
+            if f.container == "vector":
+                rec = self.vectors.get((q, bool(f.is_const)), {})
+                if rec.get("reason") or not rec:
+                    return None, rec.get("reason", "std::vector non decrit")
+                if rec["mode"] == "numeric":
+                    return ('detail::vector_member(%s, "%s", &%s::%s);' % (c, py, O, name),
+                            "numpy.ndarray")
+                return ('detail::vector_member(%s, "%s", &%s::%s);' % (c, py, O, name),
+                        "VectorView[%s]" % rec["hint"])
             if _is_std_string(q):
                 return 'detail::field(%s, "%s", &%s::%s);' % (c, py, O, name), "str"
             if q.startswith("std::array<"):
@@ -838,7 +1062,18 @@ _T = TypeVar("_T")
 
 
 class ArrayView(Generic[_T]):
-    """Tableau de structures, element par reference."""
+    """Tableau de taille fixe, element par reference. Valide tant que l'objet
+    qui le porte vit."""
+    def __len__(self) -> int: ...
+    def __getitem__(self, index: int) -> _T: ...
+    def __setitem__(self, index: int, value: _T) -> None: ...
+    def __iter__(self) -> Iterator[_T]: ...
+
+
+class VectorView(Generic[_T]):
+    """std::vector, element par reference. La longueur et l'adresse des
+    elements sont relues a chaque acces : un push_back du cote C++ ne rend pas
+    la vue invalide."""
     def __len__(self) -> int: ...
     def __getitem__(self, index: int) -> _T: ...
     def __setitem__(self, index: int, value: _T) -> None: ...
@@ -1021,6 +1256,27 @@ def select_functions(functions: Sequence[model.Function], cfg: Config
     return out
 
 
+def span_pairs(cfg: Config) -> Dict[Tuple[str, str], str]:
+    """[pybind] spans = sim::Plan::wps: nb_wps ; ... : 'classe::pointeur' et son
+    compteur, membre de la meme classe.
+
+    Rien ne permet de deviner qu'un pointeur et un entier voisins vont
+    ensemble, ni lequel borne l'autre : c'est une declaration, pas une
+    heuristique.
+    """
+    out = {}
+    for entry in cfg.get_list("pybind", "spans"):
+        # Le separateur est un ':' SEUL : celui de 'sim::Plan' n'en est pas un.
+        parts = re.split(r"(?<!:):(?!:)", entry)
+        if len(parts) != 2:
+            continue
+        owner, _, member = parts[0].strip().rpartition("::")
+        count = parts[1].strip()
+        if owner and member.isidentifier() and count.isidentifier():
+            out[(owner, member)] = count
+    return out
+
+
 def render_module(cfg: Config) -> str:
     return """// =============================================================================
 //  Genere par Scry (scry gen --pybind). Ne pas editer a la main.
@@ -1058,7 +1314,7 @@ def build_context(structs: Sequence[model.Struct], cfg: Config, header=None,
                   functions: Sequence[model.Function] = ()) -> Dict:
     selected = select_variables(variables, cfg)
     bound_functions = select_functions(functions, cfg)
-    binder = Binder(structs, selected, bound_functions)
+    binder = Binder(structs, selected, bound_functions, span_pairs(cfg))
     # Headers des structures, plus ceux qui ne declarent que des variables
     # ou des fonctions.
     sources = generator.source_headers(list(structs), cfg, header)
@@ -1083,9 +1339,12 @@ def build_context(structs: Sequence[model.Struct], cfg: Config, header=None,
             for e in binder.enums],
         "namespaces": binder.namespaces,
         "views": [{"alias": t.alias, "name": name} for t, name in binder.views],
+        "vector_views": [{"cpp": rec["cpp"], "name": rec["name"]}
+                         for rec in binder.vectors.values() if rec["name"]],
         "hashes": binder.root_hashes(),
         "globals": binder.globals,
         "functions": binder.free_functions(),
+        "notes": binder.notes,
     }
 
 

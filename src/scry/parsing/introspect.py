@@ -536,14 +536,22 @@ class Introspector(object):
             t = declarations.remove_cv(t)
         if declarations.is_void(t):
             return ref
-        base = model.Field(name="", type_name=t.decl_string, kind=model.UNKNOWN)
-        # max_depth - 1 : _describe_type renseigne nature, taille, nom qualifie
-        # et valeurs d'enum, puis s'arrete au bord de la classe. Le drapeau
-        # 'truncated' qui en resulte ne dirait rien d'utile ici.
-        self._describe_type(base, t, depth=max(self.cfg.max_depth - 1, 0), seen=())
-        base.truncated = ""
-        ref.base = base
+        ref.base = self._bare_field("", t)
         return ref
+
+    def _bare_field(self, name: str, t) -> model.Field:
+        """Field decrivant un type SANS descendre dans ses membres.
+
+        Sert la ou l'on veut l'identite d'un type et non son contenu : un
+        argument, un retour. La profondeur est poussee a un cran de la limite,
+        ce qui renseigne nature, taille, nom qualifie et valeurs d'enum puis
+        s'arrete au bord de la classe ; le drapeau 'truncated' qui en resulte
+        ne dirait rien d'utile et est efface.
+        """
+        fld = model.Field(name=name, type_name=t.decl_string, kind=model.UNKNOWN)
+        self._describe_type(fld, t, depth=max(self.cfg.max_depth - 1, 0), seen=())
+        fld.truncated = ""
+        return fld
 
     def _open_cache(self):
         """Cache pygccxml, un fichier par configuration de compilateur.
@@ -975,6 +983,7 @@ class Introspector(object):
         # --- classe, struct, union -------------------------------------------
         if declarations.is_class(t) or declarations.is_class_declaration(t):
             self._descend_class(fld, t, depth, seen)
+            self._describe_container(fld, t, depth, seen)
             return
 
         # --- fondamental ------------------------------------------------------
@@ -983,6 +992,51 @@ class Introspector(object):
             return
 
         fld.kind = model.UNKNOWN
+
+    def _describe_container(self, fld: model.Field, t, depth: int, seen: Tuple[str, ...]):
+        """Reconnait un std::vector et decrit son element.
+
+        Le type de l'element est lu sur le typedef 'value_type' de la classe,
+        et non devine en decoupant '<...>' : c'est le compilateur qui repond,
+        y compris quand l'allocateur ou un alias brouille l'ecriture. En
+        Python embarque, meme processus, data() et size() sont parfaitement
+        lisibles ; c'est ce qui rend un vector exposable alors que son contenu
+        n'est pas dans la structure.
+
+        L'element est decrit ENTIEREMENT, membres compris, avec des offsets
+        comptes depuis son propre debut. C'est ce qui permet d'exposer un
+        std::vector<Truc> dont Truc n'apparait nulle part ailleurs : un type
+        imbrique, par exemple, que rien d'autre ne ferait entrer dans le
+        modele. Ces offsets ne sont pas ceux d'un membre de la structure
+        englobante, et l'element n'est pas dans son parcours : un vector ne
+        place pas son contenu.
+        """
+        decl = self._container_decl(t)
+        if decl is None or not str(getattr(decl, "name", "")).startswith("vector<"):
+            return
+        if _qualified_name(getattr(decl, "parent", None) or decl) != "std":
+            return
+        value_type = None
+        for member in getattr(decl, "declarations", []) or []:
+            if isinstance(member, declarations.typedef_t) and member.name == "value_type":
+                value_type = declarations.remove_cv(
+                    declarations.remove_alias(member.decl_type))
+                break
+        if value_type is None:
+            return
+        fld.container = "vector"
+        elem = model.Field(name="[]", type_name=value_type.decl_string, kind=model.UNKNOWN,
+                           access_path="%s[0]" % fld.access_path)
+        self._describe_type(elem, value_type, depth + 1, seen)
+        fld.elem = elem
+
+    @staticmethod
+    def _container_decl(t):
+        try:
+            decl = declarations.class_traits.get_declaration(t)
+        except Exception:
+            return None
+        return decl if isinstance(decl, declarations.class_t) else None
 
     def _descend_class(self, fld: model.Field, t, depth: int, seen: Tuple[str, ...]):
         try:

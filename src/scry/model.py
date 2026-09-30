@@ -51,6 +51,16 @@ class Field:
     array_len: Optional[int] = None
     elem_type: Optional[str] = None
 
+    # Conteneur STL reconnu : "vector" pour l'instant, vide sinon. Ses elements
+    # ne sont PAS dans la structure : ils vivent au bout d'un pointeur, et leur
+    # nombre change a l'execution. C'est pourquoi ils ne sont pas des children,
+    # qui seraient comptes dans le padding et parcourus comme des membres.
+    # 'elem' decrit l'element, membres compris, avec des offsets comptes depuis
+    # SON debut et non depuis la structure englobante. A ne pas confondre avec
+    # elem_type, qui n'est que l'ecriture de l'element d'un tableau.
+    container: str = ""
+    elem: Optional["Field"] = None
+
     # Champs de bits
     bit_width: Optional[int] = None
     bit_offset: Optional[int] = None  # bits depuis abs_offset
@@ -121,6 +131,8 @@ class Field:
             "qualified_type": self.qualified_type,
             "array_len": self.array_len,
             "elem_type": self.elem_type,
+            "container": self.container,
+            "elem": self.elem.to_dict() if self.elem is not None else None,
             "bit_width": self.bit_width,
             "bit_offset": self.bit_offset,
             "enum_values": list(self.enum_values),
