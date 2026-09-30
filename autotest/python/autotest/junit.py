@@ -14,11 +14,31 @@ def write(results: Sequence, path: str, suite: str = "autotest") -> str:
     for r in results:
         case = ET.SubElement(root, "testcase", name=r.name, classname=r.scenario.module,
                              time="%.3f" % r.seconds)
-        ET.SubElement(case, "properties").extend([
+        ticks = getattr(r, "ticks", None)
+        properties = [
             ET.Element("property", name="cycles", value=str(r.cycles)),
             ET.Element("property", name="start_cycle", value=str(r.start_cycle)),
             ET.Element("property", name="slow_ticks", value=str(r.slow_ticks)),
-        ])
+        ]
+        if ticks is not None and ticks.count:
+            properties += [
+                ET.Element("property", name="tick_mean_ms", value="%.4f" % ticks.mean_ms),
+                ET.Element("property", name="tick_worst_ms", value="%.4f" % ticks.worst_ms),
+                ET.Element("property", name="tick_worst_cycle", value=str(ticks.worst_cycle)),
+            ]
+        ET.SubElement(case, "properties").extend(properties)
+        # Histogramme et profil en system-out : les CI l'affichent tel quel, et
+        # un attribut ne saurait pas porter plusieurs lignes.
+        out = []
+        if ticks is not None and ticks.count:
+            out.append("Duree des ticks : %s" % ticks.summary())
+            out += ["  %-14s %d" % pair for pair in ticks.histogram()]
+        if getattr(r, "profile", ""):
+            out.append("")
+            out.append("Profil du tick qui suit le premier depassement :")
+            out.append(r.profile)
+        if out:
+            ET.SubElement(case, "system-out").text = "\n".join(out)
         if r.status in ("failed", "error"):
             tag = "failure" if r.status == "failed" else "error"
             node = ET.SubElement(case, tag, message=r.message)

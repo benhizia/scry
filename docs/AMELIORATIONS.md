@@ -96,7 +96,7 @@ copie, 330 tests. Trois faiblesses dominent :
 | B2 | Vues Python sur `std::vector`, `std::string`, pointeur + taille | Python embarqué | 5 | M | P1, fait |
 | B3 | Rechargement à chaud des scripts | Python embarqué | 4 | S | P1, fait |
 | B4 | Vue numpy structurée d'une struct entière | Python embarqué | 4 | M | P2 |
-| B5 | Budget de temps par tick et profilage | Python embarqué | 4 | S | P2 |
+| B5 | Budget de temps par tick et profilage | Python embarqué | 4 | S | P2, fait |
 | B6 | Mode lecture seule et liste blanche d'écriture | Python embarqué | 3 | S | P2 |
 | B7 | Enregistrement et rejeu d'un vol | Python embarqué | 4 | L | P2 |
 | B8 | Métadonnées des commentaires : unités, bornes | Python embarqué | 4 | M | P2 |
@@ -342,7 +342,7 @@ structuré : `plan.legs.as_record()["altitude"]` lit 16 valeurs en un appel.
 **Risque.** Champs de bits et types non POD : exclus du dtype, avec leurs
 octets en champ opaque.
 
-#### B5. Budget de temps par tick et profilage · P2 · S
+#### B5. Budget de temps par tick et profilage · P2 · S · **fait**
 
 **Problème.** Un script trop lent décale le cycle de 20 ms. `tick_budget_ms`
 compte les dépassements, sans dire où part le temps.
@@ -350,6 +350,29 @@ compte les dépassements, sans dire où part le temps.
 **Proposition.** Histogramme des durées de tick dans le rapport, pire cas,
 et, sur dépassement, un échantillon `cProfile` du tick fautif. Option pour
 couper un scénario qui dépasse N fois.
+
+**Fait.** `TickStats` par scénario : histogramme à bornes fixes, moyenne, pire
+cas et son cycle. Bornes fixes et non liste des durées, car un scénario de cent
+mille cycles ne doit pas peser des centaines de kilooctets dans un processus
+temps réel. Mesuré **avec ou sans budget** : l'histogramme dit où part le
+temps, ce qu'aucun compteur de dépassements ne saurait faire.
+
+La démo le montre du premier coup : quinze ticks, quatorze sous 0,1 ms et un
+seul à 39 ms. `slow_ticks: 1` seul n'aurait pas distingué ce profil d'un
+scénario lent de bout en bout.
+
+`profile_slow` échantillonne avec `cProfile` le tick **qui suit** le
+dépassement, pas le fautif : on ne peut pas profiler le passé, et le suivant
+exécute presque toujours le même code. Une fois par scénario, rien du tout si
+rien ne déborde. Limite assumée et écrite : un dépassement sur le dernier tick
+d'un scénario ne donne pas de profil.
+
+`max_slow_ticks` lève `TickBudgetExceeded` dans le scénario, qui échoue comme
+sur n'importe quelle assertion. Le tick est imputé au scénario qui tournait à
+son début, pour qu'un scénario qui démarre n'hérite pas du coût du précédent.
+
+Le rapport JUnit porte `tick_mean_ms`, `tick_worst_ms` et `tick_worst_cycle` en
+propriétés, l'histogramme et le profil en `system-out`. Huit tests.
 
 #### B6. Mode lecture seule et liste blanche d'écriture · P2 · S
 

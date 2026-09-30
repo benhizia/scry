@@ -212,12 +212,51 @@ globale scalaire). Un tick qui lit et écrit une dizaine de valeurs coûte
 quelques microsecondes. Le détail des mesures est dans le README principal,
 § 8.
 
+## Savoir où part le temps d'un tick
+
+Le Python tourne **dans** le cycle : un tick trop long décale le cycle de
+20 ms de l'application. Chaque scénario mesure donc ses ticks, budget ou pas :
+
+```
+[autotest]        budget : 3 tick(s) au-dela de 1.000 ms ; 7 ticks,
+                  moyenne 4.213 ms, pire 11.902 ms au cycle 4
+[autotest]          0.00-0.10 ms   4
+[autotest]          10.00-25.00 ms 3
+```
+
+Un **histogramme à bornes fixes**, et non la liste des durées : un scénario de
+cent mille cycles ne doit pas peser des centaines de kilooctets de mesures dans
+un processus temps réel. Le rapport JUnit porte `tick_mean_ms`,
+`tick_worst_ms`, `tick_worst_cycle` en propriétés, et l'histogramme en
+`system-out`.
+
+```cpp
+cfg.tick_budget_ms  = 1.0;   // au-delà, le tick est compté (slow_ticks)
+cfg.profile_slow    = true;  // et le tick suivant est échantillonné
+cfg.max_slow_ticks  = 10;    // au 10ᵉ dépassement, le scénario est coupé
+```
+
+`profile_slow` joint au rapport les fonctions les plus coûteuses, `cProfile` à
+l'appui. **Le tick profilé est celui qui suit le premier dépassement, pas le
+fautif lui-même** : on ne peut pas profiler le passé, et le tick suivant
+exécute presque toujours le même code. Une fois par scénario, et rien du tout
+si rien ne déborde — le coût est nul dans le cas normal. Corollaire : un
+dépassement sur le **dernier** tick d'un scénario ne donne pas de profil, faute
+de tick suivant ; l'histogramme et le pire cas, eux, le montrent toujours.
+
+C'est d'ailleurs ce que dit le rapport de la démo : quinze ticks, quatorze
+sous 0,1 ms et un seul à 39 ms. Un compteur de dépassements seul n'aurait pas
+distingué ce profil-là d'un scénario lent de bout en bout.
+
+`max_slow_ticks` lève `TickBudgetExceeded` dans le scénario, qui échoue comme
+sur n'importe quelle assertion : un scénario qui décale le cycle à chaque tour
+ne mesure plus rien d'utile.
+
 ## Points de vigilance
 
 - **Temps de cycle.** Le Python s'exécute *dans* le cycle. Faites peu de
   travail par tick et gardez les analyses lourdes pour la fin du scénario.
-  `HostConfig::tick_budget_ms` compte les ticks trop longs dans le rapport
-  (`slow_ticks`).
+  Voir la section suivante, qui dit où part le temps.
 - **Debug et Release.** Le modèle Scry décrit une configuration de build.
   L'application doit être compilée dans la même, sinon les `static_assert` des
   bindings refusent de compiler : c'est voulu. Pour une application en `/MDd`,
