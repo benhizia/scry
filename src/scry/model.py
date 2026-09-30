@@ -380,6 +380,152 @@ class Variable:
         }
 
 
+@dataclass
+class TypeRef:
+    """Type tel qu'il apparait dans une signature : retour ou argument.
+
+    Deux ecritures cohabitent, parce qu'elles ne servent pas a la meme chose.
+    'cpp' est l'ecriture exacte du compilateur, 'const sim::Etat &' : c'est la
+    seule qui puisse lever une surcharge dans un static_cast. 'base' decrit le
+    type une fois otes const, reference et pointeur : c'est lui qui doit etre
+    enregistre en Python pour que la liaison compile, et lui qui donne
+    l'indication de type du stub. Un argument n'a ni offset ni membres : base
+    ne descend pas dans la structure.
+    """
+
+    cpp: str                         # "const sim::Etat &", tel quel
+    base: Optional[Field] = None     # type nu, None pour void
+    is_reference: bool = False
+    is_pointer: bool = False
+    is_const: bool = False           # const porte par le type nu
+    is_array: bool = False           # 'int a[4]' en argument : decroit en pointeur
+
+    @property
+    def is_void(self) -> bool:
+        return self.base is None
+
+    @property
+    def is_cstring(self) -> bool:
+        """'const char*' : une chaine C, pas une adresse a exposer en entier."""
+        return (self.is_pointer and self.base is not None
+                and self.base.kind == FUNDAMENTAL
+                and canonical_type(self.base.type_name, 1) in ("char", "signed char",
+                                                               "unsigned char"))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "cpp": self.cpp,
+            "is_reference": self.is_reference,
+            "is_pointer": self.is_pointer,
+            "is_const": self.is_const,
+            "is_void": self.is_void,
+            "base": self.base.to_dict() if self.base is not None else None,
+        }
+
+
+@dataclass
+class Argument:
+    """Un argument de fonction. 'default' est l'expression C++ du defaut, telle
+    que le compilateur l'a vue ('2', '1.5', '"x"'), vide s'il n'y en a pas."""
+
+    name: str
+    type: TypeRef
+    default: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"name": self.name, "default": self.default, "type": self.type.to_dict()}
+
+
+@dataclass
+class Function:
+    """Une fonction libre d'un header, ou une methode publique d'une classe.
+
+    C'est ce qui fait passer un script embarque de « lire et ecrire » a
+    « piloter » : appeler reset() ou set_mode(Mode::Vol) au lieu de reposer des
+    variables une par une.
+
+    'is_inline' dit que la definition est dans le header. Une fonction
+    seulement DECLAREE vit dans la bibliotheque du tiers : lier le module
+    dessus echouerait a l'edition des liens. C'est la raison pour laquelle le
+    generateur ne l'expose que si la configuration la nomme explicitement.
+    """
+
+    name: str                        # "set_mode"
+    qualified_name: str              # "sim::set_mode"
+    returns: TypeRef
+    args: List[Argument] = dc_field(default_factory=list)
+    owner: str = ""                  # classe proprietaire, "" si fonction libre
+    is_inline: bool = False
+    is_static: bool = False          # methode statique : pas de self
+    is_const: bool = False           # methode const
+    is_virtual: bool = False
+    is_variadic: bool = False
+    access: str = "public"           # methode : "public", "protected", "private"
+    doc: str = ""
+    header: str = ""
+
+    @property
+    def is_method(self) -> bool:
+        return bool(self.owner)
+
+    @property
+    def namespace(self) -> str:
+        """Namespace d'une fonction libre, "" a la racine. Pour une methode,
+        c'est le namespace de sa classe."""
+        head, sep, _ = (self.owner or self.qualified_name).rpartition("::")
+        return head if sep else ""
+
+    @property
+    def signature(self) -> str:
+        """'double sim::marge(const sim::Etat &) const', pour les rapports et
+        pour distinguer deux surcharges."""
+        args = ", ".join(a.type.cpp for a in self.args)
+        if self.is_variadic:
+            args = (args + ", ..." if args else "...")
+        return "%s %s(%s)%s" % (self.returns.cpp, self.qualified_name, args,
+                                " const" if self.is_const else "")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "qualified_name": self.qualified_name,
+            "signature": self.signature,
+            "owner": self.owner,
+            "is_inline": self.is_inline,
+            "is_static": self.is_static,
+            "is_const": self.is_const,
+            "is_virtual": self.is_virtual,
+            "is_variadic": self.is_variadic,
+            "access": self.access,
+            "doc": self.doc,
+            "header": self.header,
+            "returns": self.returns.to_dict(),
+            "args": [a.to_dict() for a in self.args],
+        }
+
+
+def select_functions(functions: Sequence["Function"], type_names: Sequence[str] = None,
+                     include: Sequence[str] = (), exclude: Sequence[str] = ()
+                     ) -> Tuple[List["Function"], List[str]]:
+    """(fonctions retenues, signatures ecartees), memes motifs que select_types.
+
+    Deux raisons d'ecarter une fonction. Son nom qualifie ne passe pas le
+    filtre, comme pour un type. Ou bien c'est la methode d'une classe que le
+    filtre a deja retiree : la garder promettrait d'appeler une classe absente
+    du module. type_names a None ne verifie pas les proprietaires, ce qui sert
+    aux tests du filtre seul.
+    """
+    kept_types = None if type_names is None else set(type_names)
+    gardes, ecartes = [], []
+    for fn in functions:
+        garde = (not include or matches_type(fn.qualified_name, include)) \
+            and not matches_type(fn.qualified_name, exclude)
+        if garde and kept_types is not None and fn.owner and fn.owner not in kept_types:
+            garde = False
+        (gardes if garde else ecartes).append(fn)
+    return gardes, [fn.signature for fn in ecartes]
+
+
 # ---------------------------------------------------------------------------
 # Correspondance type C++ -> format ImGui, utilisee par le generateur
 # ---------------------------------------------------------------------------

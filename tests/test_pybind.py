@@ -159,6 +159,168 @@ def test_filtres_expose_et_hide(tmp_path):
     assert len(pybind.select_variables(variables, load_config(EXAMPLE_INI))) == len(variables)
 
 
+# -- fonctions ---------------------------------------------------------------
+def R(cpp, kind=model.FUNDAMENTAL, type_name="int", size=4, **kw):
+    """TypeRef d'un type de signature. cpp porte const, & et *, base le type nu."""
+    base = None if kind is None else model.Field(name="", type_name=type_name, kind=kind,
+                                                 size=size, **kw)
+    return model.TypeRef(cpp=cpp, base=base, is_reference=cpp.endswith("&"),
+                         is_pointer=cpp.endswith("*"), is_const="const" in cpp)
+
+
+def A(name, ref, default=""):
+    return model.Argument(name=name, type=ref, default=default)
+
+
+VOID = model.TypeRef(cpp="void")
+INT = R("int")
+DOUBLE = R("double", type_name="double", size=8)
+ETAT = R("::ns::S &", model.STRUCT, "S", 160, qualified_type="ns::S")
+MODE = R("::ns::Mode", model.ENUM, "Mode", 1, enum_type="ns::Mode",
+         qualified_type="ns::Mode", enum_items=[("Off", 0), ("On", 10)])
+CSTR = R("char const *", type_name="char", size=1)
+
+
+def Fn(qualified, returns=VOID, args=(), owner="", **kw):
+    kw.setdefault("is_inline", True)
+    return model.Function(name=qualified.rpartition("::")[2], qualified_name=qualified,
+                          returns=returns, args=list(args), owner=owner,
+                          header="app/api.h", **kw)
+
+
+def _functions():
+    return [
+        Fn("ns::reset"),
+        Fn("ns::regler", args=[A("m", MODE), A("v", DOUBLE, default="1.5")]),
+        Fn("ns::courant", returns=ETAT),
+        Fn("ns::nom", returns=CSTR),
+        Fn("ns::somme", returns=INT, args=[A("a", INT)]),
+        Fn("ns::somme", returns=DOUBLE, args=[A("a", DOUBLE)]),
+        Fn("ns::sub::doubler", returns=INT, args=[A("v", INT)]),
+        Fn("ns::S::marge", returns=DOUBLE, args=[A("p", DOUBLE)], owner="ns::S",
+           is_const=True, doc="Marge restante."),
+        Fn("ns::S::version", returns=INT, owner="ns::S", is_static=True),
+        # Chacune non liable, pour une raison differente.
+        Fn("ns::externe", returns=INT, is_inline=False),
+        Fn("ns::trace", returns=INT, args=[A("f", CSTR)], is_variadic=True),
+        Fn("ns::S::virtuelle", returns=INT, owner="ns::S", is_virtual=True),
+        Fn("ns::S::cachee", returns=INT, owner="ns::S", access="private"),
+        Fn("ns::listes", returns=R("::std::vector<int>", model.CLASS, "vector<int>", 24,
+                                   qualified_type="std::vector<int>")),
+        Fn("ns::inconnue", args=[A("t", R("::autre::T &", model.STRUCT, "T", 8,
+                                          qualified_type="autre::T"))]),
+    ]
+
+
+def _render_functions(ini=None):
+    s = _struct()
+    return pybind.render([s], load_config(ini or EXAMPLE_INI), functions=_functions())
+
+
+def test_fonctions_libres_et_methodes():
+    text = _render_functions()
+    expected = [
+        'detail::submodule(m, "ns").def("reset", &::ns::reset);',
+        'detail::submodule(m, "ns").def("regler", &::ns::regler, py::arg("m"),'
+        ' py::arg("v") = 1.5);',
+        # Reference en retour : une vue, sinon pybind11 copierait l'objet.
+        'detail::submodule(m, "ns").def("courant", &::ns::courant,'
+        ' py::return_value_policy::reference);',
+        'detail::submodule(m, "ns").def("nom", &::ns::nom);',
+        'detail::submodule(m, "ns::sub").def("doubler", &::ns::sub::doubler, py::arg("v"));',
+        # Methode : sur l'objet py::class_ de sa classe, avec son commentaire.
+        'c0.def("marge", &T0::marge, "Marge restante.", py::arg("p"));',
+        'c0.def_static("version", &T0::version);',
+    ]
+    for line in expected:
+        assert line in text, line
+    assert "inline void register_functions(py::module_& m)" in text
+    # register_globals ferme le module : il doit passer apres les fonctions.
+    assert text.index("register_functions(m);") < text.index("register_globals(m);")
+
+
+def test_surcharges_levees_par_la_signature():
+    text = _render_functions()
+    assert ('detail::submodule(m, "ns").def("somme", static_cast<int (*)(int)>(&::ns::somme),'
+            ' py::arg("a"));') in text
+    assert ('detail::submodule(m, "ns").def("somme",'
+            ' static_cast<double (*)(double)>(&::ns::somme), py::arg("a"));') in text
+
+
+def test_chaque_refus_est_explique_dans_le_code_genere():
+    text = _render_functions()
+    for fragment in [
+            "ns::externe() : declaree sans definition dans le header",
+            "variadique, sans equivalent en Python",
+            "methode virtuelle",
+            "methode private",
+            "std::vector non liee (STL, pas un POD)",
+            "type autre::T absent du module",
+    ]:
+        assert fragment in text, fragment
+
+
+def test_une_fonction_seulement_declaree_se_force_par_son_nom(tmp_path):
+    functions = _functions()
+    ini = tmp_path / "scry.ini"
+    # Nomme sans joker : autorisation explicite de lier un symbole externe.
+    ini.write_text("[pybind]\nfunctions = ns::externe; ns::S::*\n", encoding="utf-8")
+    bound = pybind.select_functions(functions, load_config(ini))
+    noms = {bf.fn.qualified_name for bf in bound}
+    assert noms == {"ns::externe", "ns::S::marge", "ns::S::version", "ns::S::virtuelle",
+                    "ns::S::cachee"}
+    assert [bf.explicit for bf in bound if bf.fn.qualified_name == "ns::externe"] == [True]
+
+    text = pybind.render([_struct()], load_config(ini), functions=functions)
+    assert 'detail::submodule(m, "ns").def("externe", &::ns::externe);' in text
+
+    # Un joker ne suffit pas : il ne dit pas que l'on assume l'edition de liens.
+    large = tmp_path / "large.ini"
+    large.write_text("[pybind]\nfunctions = ns::*\n", encoding="utf-8")
+    text = pybind.render([_struct()], load_config(large), functions=functions)
+    assert "ns::externe() : declaree sans definition dans le header" in text
+
+
+def test_hide_functions_emporte_sur_functions(tmp_path):
+    ini = tmp_path / "scry.ini"
+    ini.write_text("[pybind]\nfunctions = ns::*\nhide_functions = *::somme; ns::sub::*\n",
+                   encoding="utf-8")
+    noms = {bf.fn.qualified_name for bf in
+            pybind.select_functions(_functions(), load_config(ini))}
+    assert "ns::somme" not in noms and "ns::sub::doubler" not in noms
+    assert "ns::reset" in noms
+
+
+def test_defaut_non_reproductible_devient_obligatoire():
+    risque = Fn("ns::bizarre", args=[A("a", INT), A("m", MODE, default="(Mode)0"),
+                                     A("v", DOUBLE, default="2.0")])
+    text = pybind.render([_struct()], load_config(EXAMPLE_INI), functions=[risque])
+    # '(Mode)0' ne se reecrit pas sans risque : ni lui ni ce qui suit ne
+    # recoit de defaut, car le C++ comme pybind11 les veulent en queue.
+    assert ('def("bizarre", &::ns::bizarre, py::arg("a"), py::arg("m"), py::arg("v"));'
+            in text)
+    sur = Fn("ns::sur", args=[A("m", MODE, default="::ns::Mode::On")])
+    text = pybind.render([_struct()], load_config(EXAMPLE_INI), functions=[sur])
+    assert 'py::arg("m") = ::ns::Mode::On' in text
+
+
+def test_stub_declare_fonctions_et_surcharges():
+    binder = pybind.Binder([_struct()], (),
+                           pybind.select_functions(_functions(), load_config(EXAMPLE_INI)))
+    stub = pybind.render_stub(binder)
+    assert 'def reset() -> "None": ...' in stub
+    assert 'def regler(m: "ns.Mode", v: "float" = ...) -> "None": ...' in stub
+    assert 'def courant() -> "ns.S": ...' in stub
+    assert 'def marge(self, p: "float") -> "float": ...' in stub
+    assert '@staticmethod\n        def version() -> "int": ...' in stub
+    assert stub.count("@overload") == 2
+    # Un namespace qui n'a qu'une fonction existe quand meme dans le stub.
+    assert "class sub:  # namespace ns::sub" in stub
+    assert 'def doubler(v: "int") -> "int": ...' in stub
+    assert "externe" not in stub and "virtuelle" not in stub
+    compile(stub, "sut.pyi", "exec")
+
+
 def test_stub_et_module_embarque():
     s, variables = _variables()
     binder = pybind.Binder([s], variables)

@@ -69,6 +69,41 @@ public:
     int shown = 1;
 };
 
+// Methodes : ce qui fait passer un script de « reposer des variables » a
+// « piloter ». Toutes definies dans la classe, donc liables sans la
+// bibliotheque du tiers.
+struct Moteur
+{
+    double regime = 0.0;
+    Speed  allure = Speed::Off;
+
+    /// Remet le moteur a l'arret.
+    void   couper() { regime = 0.0; allure = Speed::Off; }
+    void   pousser(double delta, int repetitions = 1)
+    {
+        for (int i = 0; i < repetitions; ++i)
+            regime += delta;
+    }
+    double marge(double plafond) const { return plafond - regime; }
+    void   choisir(Speed v) { allure = v; }
+    Speed  choisie() const { return allure; }
+    // Surcharge : seule la signature exacte les distingue.
+    int    calibrer(int pas) { return pas; }
+    int    calibrer(double pas) { return static_cast<int>(pas); }
+    static int version() { return 7; }
+    // Vue sur un membre : ecrire dedans doit ecrire dans le moteur.
+    Sample& echantillon() { return vu_; }
+    // Non liees, chacune pour une raison differente, dite en commentaire dans
+    // le header genere.
+    virtual int virtuelle() { return 1; }
+    int declaree();                       // definie dans aucune unite
+
+private:
+    Sample vu_{};
+    int    cachee() { return 1; }         // privee : innommable hors de la classe
+};
+
+
 // Variables globales : exposees par reference dans le module embarque.
 extern Sample g_sample;                 // structure : vue
 extern Sample* g_current;               // pointeur : vue sur l'objet pointe, ou None
@@ -81,9 +116,32 @@ extern testgen::SensorSample g_sensors[4];  // tableau de structures
 static int s_internal = 0;              // static : jamais expose
 extern Child g_child;                   // enfant documente
 extern Hidden g_hidden;
+extern Moteur g_moteur;
 
 namespace inner {
 extern std::uint32_t g_ticks;           // namespace imbrique : sut.cases.inner
 }
+
+// Fonctions libres. Definies ici, donc liables sans la bibliotheque du tiers.
+inline void remettre_a_zero() { g_sample.from = 0; g_sample.speed = Speed::Off; }
+
+/// Applique une allure et rend le regime resultant.
+inline double appliquer(Moteur& m, Speed v, double delta = 2.5)
+{
+    m.choisir(v);
+    m.pousser(delta);
+    return m.regime;
+}
+
+inline Moteur&     moteur_courant() { return g_moteur; }
+inline const char* etiquette() { return "cases"; }
+inline int         additionner(int a, int b) { return a + b; }
+inline double      additionner(double a, double b) { return a + b; }
+double             compute_trim(const Sample& s);   // declaree seulement : non liee
+inline int         journaliser(const char* f, ...) { (void)f; return 0; }  // variadique
+
+namespace util {
+inline int doubler(int v) { return 2 * v; }
+}  // namespace util
 
 }  // namespace cases

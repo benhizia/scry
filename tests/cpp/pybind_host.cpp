@@ -23,6 +23,7 @@ testgen::FlightPlan g_plan{};
 testgen::SensorSample g_sensors[4]{};
 Child g_child{};
 Hidden g_hidden{};
+Moteur g_moteur{};
 namespace inner {
 std::uint32_t g_ticks = 0;
 }
@@ -63,5 +64,7 @@ int main(int argc, char** argv)
                 cases::g_child.extra);
     std::printf("PLAN %s %d %u\n", cases::g_plan.callsign.c_str(),
                 static_cast<int>(cases::g_plan.legs[2].phase), cases::g_plan.payload.raw);
+    std::printf("MOTEUR %g %d\n", cases::g_moteur.regime,
+                static_cast<int>(cases::g_moteur.allure));
     return 0;
 }

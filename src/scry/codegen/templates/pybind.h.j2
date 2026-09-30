@@ -266,6 +266,25 @@ void services(py::class_<T, H>& cls, const char* path, py::tuple fields, py::dic
         cls.def(py::init<>());
 }
 
+// "sim::detail" -> m.sim.detail, cree s'il manque. "" rend m elle-meme.
+inline py::module_ submodule(py::module_ root, const std::string& path)
+{
+    py::module_ mod = std::move(root);
+    std::size_t start = 0;
+    while (start < path.size()) {
+        std::size_t end = path.find("::", start);
+        if (end == std::string::npos)
+            end = path.size();
+        const std::string part = path.substr(start, end - start);
+        if (py::hasattr(mod, part.c_str()))
+            mod = mod.attr(part.c_str()).cast<py::module_>();
+        else
+            mod = mod.def_submodule(part.c_str());
+        start = end + 2;
+    }
+    return mod;
+}
+
 // -----------------------------------------------------------------------------
 // Variables globales : proprietes de module, lues et ecrites en place.
 //
@@ -372,7 +391,7 @@ public:
         py::object module_type = py::module_::import("types").attr("ModuleType");
         py::object builtins = py::module_::import("builtins");
         for (auto& entry : modules_) {
-            py::module_ mod = submodule(entry.first);
+            py::module_ mod = submodule(root_, entry.first);
             py::dict props = entry.second;
             py::object cls = builtins.attr("type")(
                 std::string(py::str(mod.attr("__name__"))) + "_scry_globals",
@@ -411,25 +430,6 @@ private:
             props = py::dict();
         props[name] = property(get, set, py::none(),
                                doc ? py::object(py::str(doc)) : py::object(py::none()));
-    }
-
-    // "sim::detail" -> m.sim.detail, cree s'il manque.
-    py::module_ submodule(const std::string& ns)
-    {
-        py::module_ mod = root_;
-        std::size_t start = 0;
-        while (start < ns.size()) {
-            std::size_t end = ns.find("::", start);
-            if (end == std::string::npos)
-                end = ns.size();
-            const std::string part = ns.substr(start, end - start);
-            if (py::hasattr(mod, part.c_str()))
-                mod = mod.attr(part.c_str()).cast<py::module_>();
-            else
-                mod = mod.def_submodule(part.c_str());
-            start = end + 2;
-        }
-        return mod;
     }
 
     py::module_ root_;
@@ -489,7 +489,7 @@ inline void register_types(py::module_& m)
 }
 
 // Variables globales des headers, exposees par reference ([pybind] expose et
-// hide filtrent par nom qualifie). A appeler apres register_types.
+// hide filtrent par nom qualifie). A appeler EN DERNIER : voir register_all.
 inline void register_globals(py::module_& m)
 {
     detail::Globals globals(m);
@@ -499,10 +499,35 @@ inline void register_globals(py::module_& m)
     globals.install();
 }
 
-// Tout : types, enums et variables globales.
+// Fonctions libres des headers ([pybind] functions et hide_functions filtrent
+// par nom qualifie). Les METHODES ne sont pas ici : elles s'ecrivent sur
+// l'objet py::class_ de leur classe, qui n'existe que dans register_types.
+//
+// Seules les fonctions DEFINIES dans le header sont liees. Une fonction
+// seulement declaree vit dans la bibliotheque du tiers : la citer ferait
+// echouer l'edition de liens du module, et le commentaire genere le dit.
+inline void register_functions(py::module_& m)
+{
+{% if functions %}
+{% for f in functions %}
+    {{ f.line }}
+{% endfor %}
+{% else %}
+    (void)m;
+{% endif %}
+}
+
+// Tout : types, enums, fonctions, puis variables globales.
+//
+// L'ordre compte. register_globals FERME le module : il lui donne une classe
+// dont __setattr__ refuse un nom inconnu, pour qu'une faute de frappe dans un
+// script leve AttributeError au lieu de creer un attribut qui n'ecrit nulle
+// part. Poser une fonction apres cela serait refuse. register_globals passe
+// donc en dernier.
 inline void register_all(py::module_& m)
 {
     register_types(m);
+    register_functions(m);
     register_globals(m);
 }
 

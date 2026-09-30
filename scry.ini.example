@@ -157,8 +157,8 @@ cxx =
 
 [pybind]
 ; 'scry gen --pybind' : bindings pybind11 pour un interpreteur Python embarque
-; dans l'application. Tous les types, et toutes les variables globales des
-; headers, par reference.
+; dans l'application. Tous les types, toutes les variables globales des
+; headers, par reference, et les fonctions qu'ils definissent.
 ; Nom du module embarque, importe par les scripts : import sut
 module = sut
 ; Variables globales exposees, motifs glob sur le nom qualifie, separes par
@@ -166,6 +166,17 @@ module = sut
 ;   expose = sim::*; moteur::g_*
 expose =
 hide =
+; Fonctions exposees : fonctions libres des headers et methodes publiques non
+; virtuelles. Motifs glob sur le nom qualifie. Vide = toutes.
+; hide_functions l'emporte, comme hide sur expose.
+;
+; Ne sont liees, par defaut, que les fonctions DEFINIES dans le header. Une
+; fonction seulement declaree vit dans la bibliotheque du tiers : le module ne
+; se lierait pas. Un motif SANS joker vaut autorisation explicite de la lier
+; quand meme, et c'est la seule facon de l'obtenir.
+;   functions = sim::*; sim::compute_trim
+functions =
+hide_functions =
 ; Instances exposees a la main (hors variables globales), annoncees dans le
 ; stub .pyi pour l'autocompletion. Format 'nom: type'.
 ;   globals = moteur: sim::Moteur
