@@ -192,10 +192,28 @@ jusqu'ici nul de l'en-tête v2 : la version du format ne change pas, et un
 fichier sans relais reste octet pour octet celui qu'écrivait la version
 précédente. `raven-cat` ajoute une colonne `dir`, vide hors relais.
 
-Mesuré sur ce poste, sous MSVC (`raven_relay_tests`) : 500 commandes et 500
-acquittements relayés en TCP sans perte ni altération, 1000 enregistrements
-avec leur sens, zéro trame d'observation perdue ; 2000 mesures et 2000
-consignes en UDP, zéro erreur de CRC32 et zéro trou de numérotation.
+Mesuré sur ce poste, sous MSVC (`raven_relay_tests`), les trois scénarios de
+SwitchSpy repris :
+
+| Scénario | Résultat |
+|---|---|
+| 01, TCP | 500 commandes et 500 acquittements relayés sans perte ni altération, 1000 enregistrements avec leur sens, zéro trame d'observation perdue |
+| 02, UDP | 2000 mesures et 2000 consignes, zéro erreur de CRC32, zéro trou de numérotation |
+| 06, structs complexes | 300 messages, zéro octet modifié, et **zéro écart de décodage** sur ~6000 comparaisons faites par le descripteur seul |
+
+Le scénario 06 est celui qui prouve le plus : les octets reçus sont relus par
+les **offsets du `.rvndesc`**, sans que le relecteur connaisse les types C++,
+et comparés aux valeurs émises. Imbrication, tableau de structures, tableau de
+scalaires, chaîne, enum à valeurs non contiguës, drapeaux en entier masqué. Il
+vérifie aussi que `sizeof` du compilateur égale la taille annoncée par le
+descripteur : si elle différait, le relais découperait le flux au mauvais
+endroit et tout le reste serait faux.
+
+Un tableau de structures n'est décrit qu'une fois, `legs.[]`, avec sa taille ;
+les éléments suivants se lisent en avançant de cette taille. C'est la seule
+arithmétique que le relecteur ait à faire, et elle vient du descripteur. Fausser
+ce pas d'un seul octet fait apparaître 2700 écarts sur 300 messages — le test
+mord.
 
 ## Choix de cette version
 

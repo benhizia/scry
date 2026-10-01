@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -20,6 +21,7 @@
 #include "engine.h"
 #include "net/01_tcp_simple/shared.hpp"
 #include "net/02_udp_relay/shared.hpp"
+#include "net/06_complex_structs/shared.hpp"
 #include "raven/rvn.h"
 #include "raven/sockets.h"
 #include "raven/spsc.h"
@@ -407,9 +409,248 @@ static void queue_unit() {
     // l'appelant renonce, ce que fait le relais et pas ce test.
 }
 
+// --------------------------------------------- scenario 06 : structs complexes
+// Imbrication, tableaux de structures, tableaux de scalaires, enum a valeurs
+// non contigues, chaine, drapeaux en entier masque.
+//
+// Ce que ce scenario prouve, et que les deux autres ne prouvent pas : le
+// DESCRIPTEUR decrit la realite. Les octets recus sont relus par les offsets
+// du .rvndesc, et compares aux valeurs emises. Si Scry se trompait d'un seul
+// octet, aucun champ ne tomberait juste.
+
+// Valeurs attendues, deduites du numero de sequence : le test n'a ainsi rien a
+// memoriser entre l'emission et la relecture.
+static LegPhase attendu_phase(int i) {
+    const LegPhase table[4] = {LegPhase::Taxi, LegPhase::Climb, LegPhase::Cruise,
+                               LegPhase::Hold};
+    return table[i];
+}
+static int32_t attendu_altitude(uint64_t seq, int i) { return int32_t(1000 * (i + 1) + seq); }
+static double attendu_gain(uint64_t seq, int j) { return 0.5 * (j + 1) + double(seq) * 0.001; }
+static uint32_t attendu_flags(uint64_t seq) {
+    return uint32_t(seq & 1) | uint32_t((seq >> 1) & 1) << 1 | uint32_t(seq % 97 == 0) << 2
+           | uint32_t(seq % 256) << 8;
+}
+
+static void remplir(ComplexCommand& c, uint64_t seq) {
+    std::memset(&c, 0, sizeof c);
+    c.header.sequence = seq;
+    c.header.emitted_ns = seq * 2500000ull;
+    c.header.source_id = 0x1234;
+    c.header.version = 3;
+    std::snprintf(c.callsign, sizeof c.callsign, "AF%04u", unsigned(seq % 10000));
+    for (int i = 0; i < 4; ++i) {
+        c.legs[i].phase = attendu_phase(i);
+        c.legs[i].altitude_ft = attendu_altitude(seq, i);
+        c.legs[i].speed_kt_e2 = uint32_t(25000 + i * 100);
+        c.legs[i].duration_ms = uint32_t(60000 + i);
+    }
+    for (int j = 0; j < 3; ++j) c.gains[j] = attendu_gain(seq, j);
+    c.fuel_kg = 1200.5f + float(seq);
+    c.flags = attendu_flags(seq);
+}
+
+// Relit un message avec le descripteur SEUL, sans connaitre les types C++, et
+// compare a ce qui a ete emis. C'est le coeur du scenario.
+static void verifier_par_le_descripteur(const Descriptor& d, const ChannelDesc& ch,
+                                        const unsigned char* bytes, uint64_t seq,
+                                        uint64_t& ecarts) {
+    auto champ = [&](const char* chemin) -> const FieldDesc* {
+        const FieldRef r = d.find(std::string(ch.name) + "." + chemin);
+        return d.field(r);
+    };
+    auto entier = [&](const char* chemin, uint32_t index = 0) -> int64_t {
+        const FieldDesc* f = champ(chemin);
+        if (!f) { ++ecarts; return 0; }
+        return read_integer(*f, bytes + f->offset, index);
+    };
+    auto reel = [&](const char* chemin, uint32_t index = 0) -> double {
+        const FieldDesc* f = champ(chemin);
+        if (!f) { ++ecarts; return 0.0; }
+        return read_number(*f, bytes + f->offset, index);
+    };
+
+    if (entier("header.sequence") != int64_t(seq)) ++ecarts;
+    if (entier("header.source_id") != 0x1234) ++ecarts;
+    if (entier("header.version") != 3) ++ecarts;
+    if (entier("flags") != int64_t(attendu_flags(seq))) ++ecarts;
+
+    // Chaine : un tableau de caracteres, element par element.
+    char lu[8] = {0};
+    const FieldDesc* cs = champ("callsign");
+    if (!cs || cs->count != 8) ++ecarts;
+    else
+        for (uint32_t i = 0; i < 8; ++i) lu[i] = char(read_integer(*cs, bytes + cs->offset, i));
+    char veut[8];
+    std::snprintf(veut, sizeof veut, "AF%04u", unsigned(seq % 10000));
+    if (std::strcmp(lu, veut) != 0) ++ecarts;
+
+    // Tableau de scalaires : le descripteur porte count, l'index suffit.
+    for (uint32_t j = 0; j < 3; ++j)
+        if (std::abs(reel("gains", j) - attendu_gain(seq, j)) > 1e-9) ++ecarts;
+    if (std::abs(reel("fuel_kg") - double(1200.5f + float(seq))) > 1e-3) ++ecarts;
+
+    // Tableau de STRUCTURES. Le descripteur ne decrit qu'un element, 'legs.[]',
+    // avec sa taille : les suivants se lisent en avancant de cette taille.
+    // C'est la seule arithmetique que le relecteur ait a faire, et elle vient
+    // du descripteur, pas d'une connaissance des types.
+    const FieldDesc* elem = champ("legs.[]");
+    const FieldDesc* phase = champ("legs.[].phase");
+    const FieldDesc* alt = champ("legs.[].altitude_ft");
+    const FieldDesc* vit = champ("legs.[].speed_kt_e2");
+    if (!elem || !phase || !alt || !vit) { ++ecarts; return; }
+    const FieldDesc* tout = champ("legs");
+    if (!tout || elem->size == 0) { ++ecarts; return; }
+    const uint32_t n = tout->bytes() / elem->size;
+    if (n != 4) ++ecarts;
+    for (uint32_t i = 0; i < n; ++i) {
+        const unsigned char* p = bytes + i * elem->size;
+        if (read_integer(*phase, p + phase->offset) != int64_t(attendu_phase(int(i)))) ++ecarts;
+        if (read_integer(*alt, p + alt->offset) != attendu_altitude(seq, int(i))) ++ecarts;
+        if (read_integer(*vit, p + vit->offset) != int64_t(25000 + i * 100)) ++ecarts;
+    }
+
+    // L'enum se rend en texte, ce qui est l'interet d'avoir le descripteur.
+    const EnumDesc* e = d.enum_of(*phase);
+    if (!e || !e->name_of(int64_t(LegPhase::Cruise))
+        || std::string(e->name_of(int64_t(LegPhase::Cruise))) != "Cruise") ++ecarts;
+}
+
+static void scenario_complex(const char* desc) {
+    std::printf("-- 06 structs complexes\n");
+    const uint64_t kCount = 300;
+    const uint16_t port_r = free_tcp_port();
+    const std::string rvn = "relay_complex.rvn";
+
+    std::atomic<uint64_t> b_received{0}, b_bad{0};
+    std::atomic<uint16_t> port_b{0};
+    std::atomic<bool> b_ready{false}, b_failed{false};
+    std::thread b([&] {
+        net::TcpListener srv;
+        if (!srv.listen(net::Endpoint("127.0.0.1", 0))) { b_failed = true; return; }
+        port_b = srv.local_port();
+        b_ready = true;
+        net::TcpSocket c = srv.accept(5000);
+        if (!c.valid()) return;
+        for (uint64_t i = 0; i < kCount; ++i) {
+            ComplexCommand got;
+            if (!c.recv_all(&got, sizeof got, 5000)) break;
+            ComplexCommand veut;
+            remplir(veut, got.header.sequence);
+            // Octet pour octet : le relais n'a pas le droit de toucher au
+            // message, pas meme a son bourrage.
+            if (std::memcmp(&got, &veut, sizeof got) != 0) ++b_bad;
+            ++b_received;
+            ComplexReply rep;
+            std::memset(&rep, 0, sizeof rep);
+            rep.header = got.header;
+            rep.active_leg = uint8_t(got.header.sequence % 4);
+            rep.phase = got.legs[rep.active_leg].phase;
+            rep.altitude_ft = got.legs[rep.active_leg].altitude_ft;
+            rep.flags = got.flags;
+            if (!c.send_all(&rep, sizeof rep, 5000)) break;
+        }
+    });
+    for (int i = 0; i < 500 && !b_ready && !b_failed; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    CHECK(b_ready);
+    if (!b_ready) { b.join(); return; }
+
+    Raven r;
+    char spec[256];
+    std::snprintf(spec, sizeof spec, "tcp:127.0.0.1:%u|127.0.0.1:%u|ComplexCommand|ComplexReply",
+                  unsigned(port_r), unsigned(port_b.load()));
+    if (!r.start(desc, spec, rvn)) { ++g_failed; b.join(); return; }
+
+    // Ce que Scry promet avant tout : la taille annoncee est celle du
+    // compilateur. Si elle differait, le relais decouperait le flux au mauvais
+    // endroit et tout le reste serait faux.
+    const ChannelDesc* ch_cmd = nullptr;
+    const ChannelDesc* ch_rep = nullptr;
+    for (const ChannelDesc& c : r.d.channels()) {
+        if (c.name == "ComplexCommand") ch_cmd = &c;
+        if (c.name == "ComplexReply") ch_rep = &c;
+    }
+    CHECK(ch_cmd != nullptr && ch_rep != nullptr);
+    if (ch_cmd) CHECK(ch_cmd->size == sizeof(ComplexCommand));
+    if (ch_rep) CHECK(ch_rep->size == sizeof(ComplexReply));
+
+    net::TcpSocket a;
+    bool up = false;
+    for (int i = 0; i < 500 && !up; ++i) {
+        up = a.connect(net::Endpoint("127.0.0.1", port_r), 200);
+        if (!up) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(up);
+    uint64_t replies = 0, rep_bad = 0, ecarts = 0;
+    if (up) {
+        for (uint64_t seq = 1; seq <= kCount; ++seq) {
+            ComplexCommand cmd;
+            remplir(cmd, seq);
+            if (!a.send_all(&cmd, sizeof cmd, 5000)) break;
+            ComplexReply rep;
+            if (!a.recv_all(&rep, sizeof rep, 5000)) break;
+            if (rep.header.sequence != seq) ++rep_bad;
+            if (rep.altitude_ft != attendu_altitude(seq, int(seq % 4))) ++rep_bad;
+            if (rep.flags != attendu_flags(seq)) ++rep_bad;
+            ++replies;
+            // Decodage par le descripteur seul, sur les octets du message.
+            if (ch_cmd)
+                verifier_par_le_descripteur(r.d, *ch_cmd,
+                                            reinterpret_cast<const unsigned char*>(&cmd),
+                                            seq, ecarts);
+        }
+    }
+    b.join();
+    r.finish();
+
+    std::printf("   relayes %llu, acquittes %llu, ecarts de decodage %llu\n",
+                (unsigned long long)b_received.load(), (unsigned long long)replies,
+                (unsigned long long)ecarts);
+    CHECK(b_received == kCount);
+    CHECK(b_bad == 0);               // aucun octet modifie par le relais
+    CHECK(replies == kCount);
+    CHECK(rep_bad == 0);
+    CHECK(ecarts == 0);              // le descripteur decrit la realite
+
+    // Le .rvn : ce qu'il porte doit se relire par le descripteur aussi.
+    std::string err;
+    RvnReader rr;
+    CHECK(rr.open(rvn, err));
+    if (!err.empty()) std::printf("%s\n", err.c_str());
+    uint64_t a2b = 0, b2a = 0, rvn_ecarts = 0;
+    uint64_t no, t;
+    std::vector<const unsigned char*> fields;
+    // Position, dans la selection enregistree, du champ qui porte la sequence
+    // de la commande.
+    const FieldRef ref_seq = rr.descriptor().find("ComplexCommand.header.sequence");
+    int k_seq = -1;
+    for (std::size_t k = 0; k < rr.selection().size(); ++k)
+        if (rr.selection()[k] == ref_seq) k_seq = int(k);
+    CHECK(k_seq >= 0);
+    for (uint64_t n = 0; rr.read(n, no, t, fields); ++n) {
+        if (rr.last_direction() == Direction::AtoB) ++a2b;
+        else if (rr.last_direction() == Direction::BtoA) ++b2a;
+        if (k_seq >= 0) {
+            const FieldDesc* f = rr.descriptor().field(ref_seq);
+            const int64_t s = read_integer(*f, fields[std::size_t(k_seq)]);
+            // Chaque enregistrement porte l'etat de TOUS les champs choisis :
+            // une sequence de commande hors bornes serait une corruption.
+            if (s < 1 || s > int64_t(kCount)) ++rvn_ecarts;
+        }
+    }
+    std::printf("   enregistres : %llu A>B, %llu B>A, ecarts %llu\n",
+                (unsigned long long)a2b, (unsigned long long)b2a,
+                (unsigned long long)rvn_ecarts);
+    CHECK(a2b > 0 && b2a > 0);
+    CHECK(rvn_ecarts == 0);
+    std::remove(rvn.c_str());
+}
+
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::printf("usage : raven_relay_tests <switchlink.rvndesc> <sensors.rvndesc>\n");
+    if (argc < 4) {
+        std::printf("usage : raven_relay_tests <switchlink.rvndesc> <sensors.rvndesc>"
+                    " <route.rvndesc>\n");
         return 2;
     }
     // Sans tampon : un abort ne viderait pas stdout, et l'on perdrait
@@ -419,6 +660,7 @@ int main(int argc, char** argv) {
     queue_unit();
     scenario_tcp(argv[1]);
     scenario_udp(argv[2]);
+    scenario_complex(argv[3]);
     std::printf(g_failed ? "%d echec(s)\n" : "tout passe\n", g_failed);
     return g_failed ? 1 : 0;
 }

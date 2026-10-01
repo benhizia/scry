@@ -98,7 +98,8 @@ if(RAVEN_DEMO)
   # '+' separe les types : un ';' ferait une liste CMake des le depart, et le
   # decoupage sur ':' ne rendrait plus trois morceaux.
   foreach(trio "01_tcp_simple:SwitchCommand+SwitchAck:switchlink"
-               "02_udp_relay:SensorReading+SensorSetpoint:sensors")
+               "02_udp_relay:SensorReading+SensorSetpoint:sensors"
+               "06_complex_structs:ComplexCommand+ComplexReply:route")
     string(REPLACE ":" ";" parts "${trio}")
     list(GET parts 0 dir)
     list(GET parts 1 joined)
@@ -119,11 +120,13 @@ if(RAVEN_DEMO)
       COMMENT "scry raven : descripteur ${name}")
   endforeach()
   add_executable(raven_relay_tests tests/test_relay.cpp
-    "${NET_GEN}/switchlink.rvndesc" "${NET_GEN}/sensors.rvndesc")
+    "${NET_GEN}/switchlink.rvndesc" "${NET_GEN}/sensors.rvndesc"
+    "${NET_GEN}/route.rvndesc")
   target_include_directories(raven_relay_tests PRIVATE tests)
   target_link_libraries(raven_relay_tests PRIVATE raven_engine)
   add_test(NAME raven_relay_tests
-           COMMAND raven_relay_tests "${NET_GEN}/switchlink.rvndesc" "${NET_GEN}/sensors.rvndesc")
+           COMMAND raven_relay_tests "${NET_GEN}/switchlink.rvndesc" "${NET_GEN}/sensors.rvndesc"
+                   "${NET_GEN}/route.rvndesc")
 
   add_executable(raven_mcast_tests tests/test_mcast.cpp
     "${NET_GEN}/telemetry.rvndesc" "${NET_GEN}/market.rvndesc")
