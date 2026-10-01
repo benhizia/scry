@@ -113,6 +113,12 @@ git worktree add ../switchspy origin/claude/describe-selected-011CUvmX5APbfMHaiM
 ### 3.1 Reprise de SwitchSpy (suite du plan)
 
 **Étape 3 : relais TCP et UDP.** RAVEN se place entre deux équipements A et B.
+**Commencée** le 1er octobre 2026, branche `feature/raven-relais` : la file
+sans verrou, `Direction` dans `Frame` et dans le `.rvn`, les plugins `tcp:` et
+`udp:` avec un fil par sens, et les scénarios 01 et 02 automatisés
+(`raven_relay_tests`, 4/4 sous MSVC). Restent, dans cette étape, le fichier
+`raven.ini` avec ses sections `[link.x]` et le scénario 06. Détail dans
+`raven/README.md`, section « Relais ».
 
 - Plugins `TcpRelay` et `UdpRelay` dans `raven/src/engine/`, déclarés dans
   `sources.cpp` (`tcp:` et `udp:`), en s'appuyant sur `raven::net`.

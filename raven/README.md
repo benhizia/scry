@@ -122,6 +122,59 @@ La démo déroule en boucle 2 s à l'arrêt, 10 s de vol et 2 s de gel.
 `g_flight.gear_down` passe à `true` pendant une seule trame au milieu du vol :
 c'est ce que la sentinelle doit attraper.
 
+## Relais : RAVEN entre deux équipements
+
+Au lieu d'observer à côté, RAVEN se place **entre** A et B, fait passer les
+messages et en garde une copie :
+
+```
+raven --desc liaison.rvndesc --source "tcp:0.0.0.0:8001|10.0.0.2:8002|cmd|ack"
+raven --desc liaison.rvndesc --source "udp:0.0.0.0:9001|10.0.0.2:9002|mesure|consigne"
+```
+
+`<écoute>|<vers>|<canal A vers B>|<canal B vers A>`. A nous joint sur
+`écoute`, nous joignons B sur `vers`. Un sens laissé vide n'est pas relayé.
+Un seul type de struct par sens pour l'instant : TCP est un flux sans
+frontières, et c'est la taille du canal qui le découpe.
+
+**Ce qui gouverne la conception.** Le transfert est la fonction vitale : si
+RAVEN le retarde, il ne se contente pas de mal observer, il dégrade le système
+qu'il observe. D'où l'ordre, jamais autrement :
+
+```
+recevoir  →  transférer  →  pousser une copie dans la file
+```
+
+La copie part dans une file sans verrou (`include/raven/spsc.h`), vidée par le
+fil d'acquisition. Sans elle, le relais appellerait `Engine::on_frame`, qui
+prend un mutex partagé avec le visualiseur : le temps de transfert entre deux
+équipements réels dépendrait alors de ce que dessine une IHM. Quand le moteur
+prend du retard, la file se remplit et l'on perd des trames **d'observation**,
+qui se comptent comme les pertes de l'anneau SHM. Un message relayé, lui,
+n'est jamais perdu de ce fait.
+
+**Un fil par sens**, parce que `recv` bloque et que les deux sens sont
+indépendants : un fil unique planté dans le `recv` de A ne relaierait pas ce
+que B envoie pendant ce temps. Chaque file a donc un seul producteur, ce qui
+la laisse sans verrou.
+
+**Qui ferme une socket.** Chaque socket est lue par un fil et écrite par
+l'autre, ce que le système accepte. Ce qu'il n'accepte pas, c'est que l'un la
+ferme sous les pieds de l'autre : les deux sens n'utilisent donc que
+`send_all_raw` et `recv_exact_raw`, qui rapportent sans fermer. Personne ne
+ferme **pendant** une session ; le fil de supervision ferme entre deux, une
+fois les deux sens arrêtés.
+
+Le `.rvn` porte le sens de chaque message dans le premier octet du `u32`
+jusqu'ici nul de l'en-tête v2 : la version du format ne change pas, et un
+fichier sans relais reste octet pour octet celui qu'écrivait la version
+précédente. `raven-cat` ajoute une colonne `dir`, vide hors relais.
+
+Mesuré sur ce poste, sous MSVC (`raven_relay_tests`) : 500 commandes et 500
+acquittements relayés en TCP sans perte ni altération, 1000 enregistrements
+avec leur sens, zéro trame d'observation perdue ; 2000 mesures et 2000
+consignes en UDP, zéro erreur de CRC32 et zéro trou de numérotation.
+
 ## Choix de cette version
 
 - **Descripteur texte** (`.rvndesc`) : lisible, facile à comparer entre deux
@@ -146,9 +199,10 @@ c'est ce que la sentinelle doit attraper.
   descripteur, les champs choisis et le déclencheur. La n-ième trame se trouve
   par un simple calcul, et un fichier coupé reste lisible jusqu'au dernier
   enregistrement complet. Un trou dans les numéros de trame est une perte.
-- **Un seul plugin de source**, `shm`, derrière l'interface `ISource`
-  (`include/raven/source.h`). TCP, multicast et fichier s'y ajouteront sans
-  toucher au moteur.
+- **Des plugins de source** derrière l'interface `ISource`
+  (`include/raven/source.h`), déclarés dans `src/engine/sources.cpp` : `shm`
+  pour l'anneau du simulateur, `mcast` pour une écoute passive, `tcp` et `udp`
+  pour un relais. Le moteur ne sait pas d'où viennent les trames.
 
 ## Écoute passive multicast
 

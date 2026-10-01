@@ -99,7 +99,19 @@ public:
         }
     }
 
-    ~RelayBase() override { shutdown(); }
+    // Filet de securite seulement : a cet instant les sockets de la classe
+    // derivee sont DEJA detruites. C'est pourquoi stop_threads() doit avoir
+    // ete appele par le destructeur de la derivee, ou les fils liraient de la
+    // memoire liberee. L'appel ici ne fait donc rien, sauf si l'on oublie.
+    ~RelayBase() override { stop_threads(); }
+
+    // Arrete le superviseur et les fils de sens. Idempotent : a appeler en
+    // PREMIERE ligne du destructeur de chaque relais concret.
+    void stop_threads() {
+        stop_.store(true, std::memory_order_relaxed);
+        end_session();
+        if (supervisor_.joinable()) supervisor_.join();
+    }
 
     std::string describe() const override { return kind_ + ":" + spec_; }
     bool connected() const override { return up_.load(std::memory_order_relaxed); }
@@ -212,12 +224,6 @@ private:
         }
     }
 
-    void shutdown() {
-        stop_.store(true, std::memory_order_relaxed);
-        end_session();
-        if (supervisor_.joinable()) supervisor_.join();
-    }
-
     mutable std::mutex em_;
     std::string error_;
     std::thread supervisor_;
@@ -234,6 +240,7 @@ private:
 class TcpRelay : public RelayBase {
 public:
     TcpRelay(const std::string& arg, const Descriptor& d) : RelayBase("tcp", arg, d) {}
+    ~TcpRelay() override { stop_threads(); }     // avant que les sockets ne meurent
 
 protected:
     Open open_session() override {
@@ -292,6 +299,7 @@ private:
 class UdpRelay : public RelayBase {
 public:
     UdpRelay(const std::string& arg, const Descriptor& d) : RelayBase("udp", arg, d) {}
+    ~UdpRelay() override { stop_threads(); }     // avant que les sockets ne meurent
 
 protected:
     Open open_session() override {

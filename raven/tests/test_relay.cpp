@@ -29,7 +29,16 @@ using namespace raven;
 static int g_failed = 0;
 #define CHECK(c) do { if (!(c)) { std::printf("ECHEC %s:%d : %s\n", __FILE__, __LINE__, #c); ++g_failed; } } while (0)
 
-static uint16_t free_port() {
+// Un port libre pour UDP ne l'est pas forcement pour TCP, et Windows refuse
+// par ailleurs les ports de ses plages reservees (WSAEACCES, 10013). On
+// reserve donc avec le MEME protocole que celui qui s'en servira.
+static uint16_t free_tcp_port() {
+    net::TcpListener l;
+    l.listen(net::Endpoint("127.0.0.1", 0));
+    return l.local_port();
+}
+
+static uint16_t free_udp_port() {
     net::UdpSocket s;
     s.bind(net::Endpoint("127.0.0.1", 0));
     return s.local_port();
@@ -93,15 +102,23 @@ struct Raven {
 static void scenario_tcp(const char* desc) {
     std::printf("-- 01 relais TCP\n");
     const uint64_t kCount = 500;
-    const uint16_t port_b = free_port(), port_r = free_port();
+    const uint16_t port_r = free_tcp_port();
     const std::string rvn = "relay_tcp.rvn";
 
     // --- B : le vrai destinataire. Verifie chaque commande et repond.
+    // Il prend le port que le systeme veut bien lui donner et l'annonce :
+    // deviner un port libre a sa place, c'est s'exposer a sa place.
     std::atomic<uint64_t> b_received{0}, b_bad{0};
-    std::atomic<bool> b_ready{false};
+    std::atomic<uint16_t> port_b{0};
+    std::atomic<bool> b_ready{false}, b_failed{false};
     std::thread b([&] {
         net::TcpListener srv;
-        if (!srv.listen(net::Endpoint("127.0.0.1", port_b))) { std::printf("B : %s\n", srv.error().c_str()); return; }
+        if (!srv.listen(net::Endpoint("127.0.0.1", 0))) {
+            std::printf("B : %s\n", srv.error().c_str());
+            b_failed = true;
+            return;
+        }
+        port_b = srv.local_port();
         b_ready = true;
         net::TcpSocket c = srv.accept(5000);
         if (!c.valid()) { std::printf("B : personne ne s'est connecte\n"); return; }
@@ -123,13 +140,16 @@ static void scenario_tcp(const char* desc) {
             if (!c.send_all(&ack, sizeof ack, 5000)) break;
         }
     });
-    for (int i = 0; i < 500 && !b_ready; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    for (int i = 0; i < 500 && !b_ready && !b_failed; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    CHECK(b_ready);
+    if (!b_ready) { b.join(); return; }       // inutile de s'acharner deux minutes
 
     // --- RAVEN au milieu.
     Raven r;
     char spec[256];
     std::snprintf(spec, sizeof spec, "tcp:127.0.0.1:%u|127.0.0.1:%u|SwitchCommand|SwitchAck",
-                  unsigned(port_r), unsigned(port_b));
+                  unsigned(port_r), unsigned(port_b.load()));
     if (!r.start(desc, spec, rvn)) { ++g_failed; b.join(); return; }
 
     // --- A : le controleur. Envoie, puis verifie les acquittements.
@@ -199,14 +219,20 @@ static void scenario_tcp(const char* desc) {
 static void scenario_udp(const char* desc) {
     std::printf("-- 02 relais UDP\n");
     const uint64_t kCount = 2000;
-    const uint16_t port_b = free_port(), port_r = free_port();
+    const uint16_t port_r = free_udp_port();
     const std::string rvn = "relay_udp.rvn";
 
     std::atomic<uint64_t> b_received{0}, b_crc_bad{0}, b_gaps{0};
-    std::atomic<bool> b_ready{false}, b_stop{false};
+    std::atomic<uint16_t> port_b{0};
+    std::atomic<bool> b_ready{false}, b_stop{false}, b_failed{false};
     std::thread b([&] {
         net::UdpSocket s;
-        if (!s.bind(net::Endpoint("127.0.0.1", port_b))) { std::printf("B : %s\n", s.error().c_str()); return; }
+        if (!s.bind(net::Endpoint("127.0.0.1", 0))) {
+            std::printf("B : %s\n", s.error().c_str());
+            b_failed = true;
+            return;
+        }
+        port_b = s.local_port();
         s.set_receive_buffer(4 << 20);
         b_ready = true;
         uint64_t last = 0;
@@ -230,12 +256,15 @@ static void scenario_udp(const char* desc) {
             s.send_to(&sp, sizeof sp, from);
         }
     });
-    for (int i = 0; i < 500 && !b_ready; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    for (int i = 0; i < 500 && !b_ready && !b_failed; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    CHECK(b_ready);
+    if (!b_ready) { b_stop = true; b.join(); return; }
 
     Raven r;
     char spec[256];
     std::snprintf(spec, sizeof spec, "udp:127.0.0.1:%u|127.0.0.1:%u|SensorReading|SensorSetpoint",
-                  unsigned(port_r), unsigned(port_b));
+                  unsigned(port_r), unsigned(port_b.load()));
     if (!r.start(desc, spec, rvn)) { ++g_failed; b_stop = true; b.join(); return; }
     std::this_thread::sleep_for(std::chrono::milliseconds(100));   // laisser lier le port
 
@@ -373,7 +402,9 @@ static void queue_unit() {
     CHECK(got == kN);
     CHECK(desordre == 0);
     CHECK(abime == 0);
-    CHECK(big.dropped() == 0);
+    // dropped() n'est pas verifie ici : la boucle de reprise ci-dessus compte
+    // un refus a chaque tour, alors qu'un refus ne devient une perte que si
+    // l'appelant renonce, ce que fait le relais et pas ce test.
 }
 
 int main(int argc, char** argv) {
@@ -381,6 +412,9 @@ int main(int argc, char** argv) {
         std::printf("usage : raven_relay_tests <switchlink.rvndesc> <sensors.rvndesc>\n");
         return 2;
     }
+    // Sans tampon : un abort ne viderait pas stdout, et l'on perdrait
+    // justement la trace de l'endroit ou l'on a echoue.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     net::init();
     queue_unit();
     scenario_tcp(argv[1]);
