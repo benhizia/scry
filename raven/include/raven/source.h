@@ -40,6 +40,10 @@ public:
     virtual bool connected() const = 0;
     virtual uint64_t lost() const = 0;                  // trames manquees
     virtual const std::string& error() const = 0;       // "" si tout va bien
+    // Sens que porte un canal. None par defaut : une source qui observe sans
+    // s'interposer n'en connait pas. Un relais, lui, sait quel canal va de A
+    // vers B, et c'est ce qui permet au visualiseur de nommer ses onglets.
+    virtual Direction channel_direction(int channel) const { (void)channel; return Direction::None; }
 };
 
 // Fabrique a partir d'une specification "type:parametres". Renvoie nullptr

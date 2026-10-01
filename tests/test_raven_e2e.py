@@ -25,10 +25,16 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _build_dir():
+    """Dossier de build a tester. RAVEN_BUILD_DIR d'abord, sinon le plus
+    RECENT des build/raven* : plusieurs dossiers coexistent souvent, et prendre
+    le premier par ordre alphabetique revenait a tester un vieux binaire sans
+    que rien ne le dise."""
     candidats = []
     if os.environ.get("RAVEN_BUILD_DIR"):
         candidats.append(Path(os.environ["RAVEN_BUILD_DIR"]))
-    candidats += sorted((ROOT / "build").glob("raven*")) if (ROOT / "build").is_dir() else []
+    if (ROOT / "build").is_dir():
+        candidats += sorted((ROOT / "build").glob("raven*"),
+                            key=lambda p: p.stat().st_mtime, reverse=True)
     for base in candidats:
         for exe_dir in (base / "Release", base):        # multi-config, puis simple
             raven = exe_dir / "raven.exe"
@@ -210,3 +216,69 @@ def test_reste_pilotable_quand_le_visualiseur_ne_lit_plus(tmp_path):
     assert delai < 10.0, "stop traite en %.1f s" % delai
     assert int(_etat(arrets[-1])["rec"]) > 20, arrets[-1]
     assert sortie.is_file() and sortie.stat().st_size > 0
+
+
+def test_plusieurs_liaisons_par_le_protocole(tmp_path):
+    """Deux liaisons dans un seul raven, pilotees par le protocole texte.
+
+    C'est ce dont le visualiseur se sert pour sa zone fixe et ses onglets :
+    'links' nomme les liaisons et le sens de chaque canal, 'use' bascule.
+    """
+    gen = BUILD / "net_gen"
+    switch, route = gen / "switchlink.rvndesc", gen / "route.rvndesc"
+    if not (switch.is_file() and route.is_file()):
+        pytest.skip("descripteurs des scenarios de relais absents")
+
+    ini = tmp_path / "deux.ini"
+    ini.write_text(
+        "[link.commandes]\ndesc = %s\ntype = tcp\nlisten = 127.0.0.1:%d\n"
+        "forward = 127.0.0.1:%d\na_to_b = SwitchCommand\nb_to_a = SwitchAck\n\n"
+        "[link.route]\ndesc = %s\ntype = tcp\nlisten = 127.0.0.1:%d\n"
+        "forward = 127.0.0.1:%d\na_to_b = ComplexCommand\nb_to_a = ComplexReply\n"
+        % (switch.as_posix(), _port_libre(), _port_libre(),
+           route.as_posix(), _port_libre(), _port_libre()),
+        encoding="utf-8")
+
+    port = _port_libre()
+    rec = subprocess.Popen([str(_exe("raven")), "--link", str(ini), "--port", str(port)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        sock = None
+        for _ in range(100):
+            try:
+                sock = socket.create_connection(("127.0.0.1", port), timeout=2)
+                break
+            except OSError:
+                time.sleep(0.05)
+        assert sock is not None, "raven n'ecoute pas"
+        with sock:
+            # Par defaut la premiere liaison : un visualiseur qui ignore 'use'
+            # voit donc exactement ce qu'il voyait avant.
+            sock.sendall(b"hello\nlinks\n")
+            lignes = _lignes(sock, 1.5)
+            texte = "\n".join(lignes)
+            assert "channel 0 0 40 7 SwitchCommand" in texte      # descripteur de la 1re
+            links = [x for x in lignes if x.startswith("link ")]
+            assert len(links) == 2
+            assert links[0].startswith("link 0 commandes") and links[0].endswith("*")
+            assert links[1].startswith("link 1 route")
+
+            # Le sens de chaque canal : c'est ce qui nomme les onglets.
+            chans = [x for x in lignes if x.startswith("chan ")]
+            assert "chan 0 0 A>B SwitchCommand" in chans
+            assert "chan 0 1 B>A SwitchAck" in chans
+            assert "chan 1 0 A>B ComplexCommand" in chans
+            assert "chan 1 1 B>A ComplexReply" in chans
+
+            # 'use' bascule et rend le descripteur de la nouvelle liaison.
+            sock.sendall(b"use route\n")
+            texte = "\n".join(_lignes(sock, 1.5))
+            assert "ComplexCommand" in texte and "legs[3].altitude_ft" in texte
+            # Par indice aussi, et un nom inconnu est refuse en nommant ce qui existe.
+            sock.sendall(b"use 0\nuse inexistante\n")
+            texte = "\n".join(_lignes(sock, 1.5))
+            assert "SwitchCommand" in texte
+            assert "err liaison inconnue" in texte and "link 1 route" in texte
+    finally:
+        rec.terminate()
+        rec.wait(timeout=10)

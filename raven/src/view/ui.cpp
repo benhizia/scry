@@ -92,7 +92,52 @@ static void field_rows(Client& c, UiState& ui, const ChannelDesc& ch, int idx,
     ImGui::PopID();
 }
 
-static void tree_panel(Client& c, UiState& ui) {
+// Zone FIXE : la liste des liaisons, identique quel que soit l'onglet actif.
+// Elle est au-dessus des onglets et n'en fait pas partie : changer de sens ne
+// doit pas faire perdre de vue l'etat des autres liaisons, ni obliger a
+// chercher ou l'on change de liaison.
+static void links_bar(Client& c, UiState& ui) {
+    const std::vector<LinkInfo>& links = c.links();
+    if (links.size() < 2 && !links.empty()) {
+        // Une seule liaison : rien a choisir, on se contente de la nommer.
+        ImGui::TextDisabled("liaison %s", links.front().name.c_str());
+        return;
+    }
+    if (links.empty()) { ImGui::TextDisabled("liaisons : en attente"); return; }
+    ImGui::TextUnformatted("Liaisons");
+    ImGui::SameLine();
+    for (const LinkInfo& l : links) {
+        ImGui::SameLine();
+        const bool actif = l.current;
+        if (actif) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.70f, 1));
+        ImGui::PushID(l.index);
+        if (ImGui::Button(l.name.c_str())) {
+            c.use_link(l.name);
+            ui.trg_ref = FieldRef();          // le declencheur visait l'autre liaison
+            ui.path_synced = false;
+        }
+        ImGui::PopID();
+        if (actif) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s\n%s, %llu trames\n%s", l.name.c_str(), l.state.c_str(),
+                              (unsigned long long)l.frames, l.source.c_str());
+        // L'etat de chaque liaison reste lisible sans y basculer.
+        ImGui::SameLine();
+        if (l.state == "recording") ImGui::TextColored(ImVec4(1, 0.25f, 0.25f, 1), "[enr]");
+        else if (l.state == "armed") ImGui::TextColored(ImVec4(1, 0.7f, 0.1f, 1), "[arme]");
+        else ImGui::TextDisabled("[repos]");
+    }
+}
+
+// Libelle d'un onglet : le sens quand il y en a un, le nom du canal sinon.
+// En relais, un sens porte un seul type de message : un onglet par sens est
+// donc exactement un onglet par canal.
+static std::string tab_label(Client& c, const ChannelDesc& ch) {
+    const std::string dir = c.channel_direction(ch.id);
+    return dir.empty() ? ch.name : dir + "  " + ch.name;
+}
+
+static void tree_panel(Client& c, UiState& ui, const ChannelDesc& only) {
     std::vector<FieldRef> visible;
     const bool recording = c.state != "idle";
     const ImGuiTableFlags tf = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
@@ -107,19 +152,15 @@ static void tree_panel(Client& c, UiState& ui) {
         ImGui::TableSetupColumn("Trace", ImGuiTableColumnFlags_WidthFixed, 35);
         ImGui::TableSetupColumn("Decl.", ImGuiTableColumnFlags_WidthFixed, 35);
         ImGui::TableHeadersRow();
-        for (const ChannelDesc& ch : c.desc().channels()) {
-            ImGui::PushID(ch.id);
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            if (ImGui::TreeNodeEx(ch.name.c_str(), ImGuiTreeNodeFlags_SpanFullWidth |
-                                  ImGuiTreeNodeFlags_DefaultOpen, "%s", ch.name.c_str())) {
-                for (int root : ch.roots) field_rows(c, ui, ch, root, visible, recording);
-                ImGui::TreePop();
-            }
-            ImGui::PopID();
-        }
+        // Un seul canal par onglet : la racine n'a plus a etre un noeud, les
+        // champs sont directement a l'ecran.
+        ImGui::PushID(only.id);
+        for (int root : only.roots) field_rows(c, ui, only, root, visible, recording);
+        ImGui::PopID();
         ImGui::EndTable();
     }
+    // Seuls les champs de l'onglet visible sont demandes a raven.exe : les
+    // autres sens ne coutent rien tant qu'on ne les regarde pas.
     c.set_watch(visible);
 }
 
@@ -290,11 +331,25 @@ void draw(Client& c, UiState& ui) {
         ImGui::SameLine();
         if (ImGui::SmallButton("x")) c.last_error.clear();
     }
+    // Zone fixe : les liaisons. Au-dessus des onglets, donc stable.
+    links_bar(c, ui);
     ImGui::Separator();
 
     const float right = ImGui::GetContentRegionAvail().x * 0.42f;
     ImGui::BeginChild("left", ImVec2(-right, 0));
-    tree_panel(c, ui);
+    const std::vector<ChannelDesc>& channels = c.desc().channels();
+    if (channels.empty()) {
+        ImGui::TextDisabled("aucun canal");
+    } else if (ImGui::BeginTabBar("sens")) {
+        for (const ChannelDesc& ch : channels) {
+            const std::string label = tab_label(c, ch);
+            if (ImGui::BeginTabItem(label.c_str())) {
+                tree_panel(c, ui, ch);
+                ImGui::EndTabItem();
+            }
+        }
+        ImGui::EndTabBar();
+    }
     ImGui::EndChild();
     ImGui::SameLine();
     ImGui::BeginChild("right", ImVec2(0, 0));

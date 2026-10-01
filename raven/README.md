@@ -183,6 +183,41 @@ Avec une seule liaison, le dialogue est donc exactement celui d'avant : un
 visualiseur qui ignore `links` et `use` continue de marcher — ce que
 `tests/test_raven_e2e.py` vérifie sans avoir été modifié.
 
+`links` donne aussi, pour chaque liaison, le **sens que porte chaque canal** :
+
+```
+link 0 commandes idle 502 tcp:127.0.0.1:8001|... *
+chan 0 0 A>B SwitchCommand
+chan 0 1 B>A SwitchAck
+```
+
+Le sens est une propriété du montage et non des types : il n'a donc rien à
+faire dans le descripteur, et tout à faire ici. Sans cette ligne, le
+visualiseur devrait relire la spécification de la source pour deviner quel
+canal va dans quel sens.
+
+`use` vaut pour le serveur, pas par connexion : RAVEN sert un visualiseur à la
+fois, et deux clients qui se contrediraient n'auraient pas de sens.
+
+### Le visualiseur, avec plusieurs liaisons
+
+Deux zones, et la séparation entre elles est le point du dessin :
+
+- **une zone fixe en haut**, la liste des liaisons, identique quel que soit
+  l'onglet ouvert. Chacune porte son état (`[repos]`, `[armé]`, `[enr]`), de
+  sorte qu'on voit ce que font les autres sans y basculer. Un clic envoie
+  `use`. Avec une seule liaison, elle se réduit à son nom ;
+- **un onglet par sens**, `A>B SwitchCommand` et `B>A SwitchAck`. En relais,
+  un sens ne transporte qu'un type de message : un onglet par sens est donc
+  exactement un onglet par canal. Pour une source qui n'a pas de sens (SHM,
+  multicast), l'onglet porte le nom du canal.
+
+Seuls les champs de l'onglet **visible** sont demandés à `raven` : les autres
+sens ne coûtent rien tant qu'on ne les regarde pas. Et changer de liaison vide
+valeurs, traces et sentinelles affichées, parce qu'un `FieldRef` est un couple
+(canal, champ) : d'une liaison à l'autre, les mêmes indices désignent d'autres
+champs, et les garder afficherait des bêtises.
+
 **Ce qui gouverne la conception.** Le transfert est la fonction vitale : si
 RAVEN le retarde, il ne se contente pas de mal observer, il dégrade le système
 qu'il observe. D'où l'ordre, jamais autrement :

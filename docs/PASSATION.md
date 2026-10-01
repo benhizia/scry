@@ -137,10 +137,13 @@ reste compatible : `tests/test_raven_e2e.py` passe sans avoir été touché.
 (santé des liaisons, journal, performances, scénario 05), l'étape 5 (confort
 de build Windows) et l'étape 6 (rejeu vers le réseau).
 
-Deux choses que le visualiseur ne sait pas encore faire, et qu'il faudra
-décider : afficher plusieurs liaisons à la fois plutôt qu'une à la fois, et
-envoyer `links` / `use` depuis son IHM — aujourd'hui ces deux commandes se
-tapent à la main (`nc 127.0.0.1 47800`).
+Le **visualiseur** suit : une zone fixe en haut liste les liaisons avec leur
+état et bascule d'un clic, et un onglet par sens (`A>B SwitchCommand`,
+`B>A SwitchAck`) montre les champs du canal correspondant. Détail et choix de
+dessin dans `raven/README.md`, section « Relais ».
+
+Ce qu'il ne sait **pas** encore faire, et qu'il faudra décider : afficher
+plusieurs liaisons **en même temps** côte à côte, plutôt qu'une à la fois.
 
 - Plugins `TcpRelay` et `UdpRelay` dans `raven/src/engine/`, déclarés dans
   `sources.cpp` (`tcp:` et `udp:`), en s'appuyant sur `raven::net`.

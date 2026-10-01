@@ -126,6 +126,12 @@ public:
         return n;
     }
 
+    Direction channel_direction(int channel) const override {
+        for (const Way& w : ways_)
+            if (w.ch && w.ch->id == channel) return w.dir;
+        return Direction::None;
+    }
+
     const std::string& error() const override {
         if (!fatal_.empty()) return fatal_;
         std::lock_guard<std::mutex> l(em_);

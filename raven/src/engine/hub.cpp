@@ -103,6 +103,15 @@ std::string Hub::links_block() const {
         s += "link " + std::to_string(i) + " " + l.cfg.name + " " +
              rec_state_name(l.engine->state()) + " " + std::to_string(l.engine->frames()) +
              " " + l.source->describe() + (i == current_ ? " *" : "") + "\n";
+        // Le sens que porte chaque canal. C'est une propriete du montage et
+        // non des types : elle n'a donc rien a faire dans le descripteur, et
+        // tout a faire ici. Sans elle, le visualiseur devrait deviner le sens
+        // en relisant la specification de la source.
+        for (const ChannelDesc& ch : l.desc->channels()) {
+            const char* dir = direction_name(l.source->channel_direction(ch.id));
+            s += "chan " + std::to_string(i) + " " + std::to_string(ch.id) + " " +
+                 (*dir ? dir : "-") + " " + ch.name + "\n";
+        }
     }
     return s;
 }
