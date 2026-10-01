@@ -119,14 +119,15 @@ sans verrou, `Direction` dans `Frame` et dans le `.rvn`, les plugins `tcp:` et
 (`raven_relay_tests`, 4/4 sous MSVC), le fichier `raven.ini` avec ses sections
 `[link.x]` (`raven --link`), et les scénarios 01, 02 et 06 automatisés.
 
+La limite trouvée en écrivant le scénario 06 est **corrigée** : le descripteur
+expanse désormais chaque élément d'un tableau de structures en champ à part
+entière (`legs[2].altitude_ft`), à son offset réel. Tout ce qui suit en
+hérite sans changement — enregistrement, sentinelles, traces, `raven-cat`,
+visualiseur — puisqu'un élément est devenu un champ comme un autre.
+
 Reste, dans cette étape, le relais de **plusieurs liaisons à la fois**, qui
-demanderait un moteur à plusieurs descripteurs. Et une limite trouvée en
-écrivant le scénario 06, à décider : le `.rvn` n'enregistre qu'**un élément**
-d'un tableau de structures, car `rec_all` sélectionne les feuilles du
-descripteur et une feuille sous `legs.[]` ne couvre que l'élément 0. Les
-tableaux de scalaires, eux, sont enregistrés en entier (`count`). Sur le fil,
-rien n'est perdu : c'est l'enregistrement qui est partiel. Détail dans
-`raven/README.md`, section « Relais ».
+demande un moteur à plusieurs descripteurs. Détail dans `raven/README.md`,
+section « Relais ».
 
 - Plugins `TcpRelay` et `UdpRelay` dans `raven/src/engine/`, déclarés dans
   `sources.cpp` (`tcp:` et `udp:`), en s'appuyant sur `raven::net`.

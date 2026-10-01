@@ -64,3 +64,35 @@ def test_struct_comme_canal(tmp_path):
     assert "field 1 -1 uint 8 8 1 -1 - sequence" in text
     with pytest.raises(ValueError):
         raven.select_types(structs, ["Absent"])
+
+
+def test_tableau_de_structures_expanse(tmp_path):
+    """Chaque element d'un tableau de structures est un champ a part entiere.
+
+    Sans cela, le descripteur ne decrirait que legs[0] : les trois autres
+    elements n'existeraient nulle part, et ne seraient donc ni enregistrables,
+    ni observables, ni tracables.
+    """
+    from scry.config import load_config
+    from scry.parsing.introspect import Introspector
+    header = os.path.join(os.path.dirname(__file__), "..", "raven", "tests", "net",
+                          "06_complex_structs", "shared.hpp")
+    it = Introspector(load_config())
+    structs = it.parse([header])
+    written = raven.generate(it.variables, [], str(tmp_path), "t", [header],
+                             structs=structs, type_names=["ComplexCommand"])
+    text = open(written[0]).read()
+
+    # Le conteneur garde sa taille totale, et porte les quatre elements.
+    assert "struct 32 64 1 -1 - legs" in text
+    for i, offset in enumerate((32, 48, 64, 80)):
+        assert "struct %d 16 1 -1 - legs[%d]" % (offset, i) in text
+        # Les membres de chaque element sont a leur offset reel : c'est le
+        # decalage de base qui les suit, pas une arithmetique du relecteur.
+        assert "int %d 4 1 -1 - legs[%d].altitude_ft" % (offset + 4, i) in text
+        assert "enum %d 1 1 0 - legs[%d].phase" % (offset, i) in text
+    assert "legs[4]" not in text                  # ni un cinquieme
+    assert "legs.[]" not in text                  # ni l'ancienne forme
+
+    # Un tableau de scalaires n'est pas expanse : il porte deja son count.
+    assert "float 96 8 3 -1 - gains" in text

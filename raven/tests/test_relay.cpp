@@ -490,27 +490,25 @@ static void verifier_par_le_descripteur(const Descriptor& d, const ChannelDesc& 
         if (std::abs(reel("gains", j) - attendu_gain(seq, j)) > 1e-9) ++ecarts;
     if (std::abs(reel("fuel_kg") - double(1200.5f + float(seq))) > 1e-3) ++ecarts;
 
-    // Tableau de STRUCTURES. Le descripteur ne decrit qu'un element, 'legs.[]',
-    // avec sa taille : les suivants se lisent en avancant de cette taille.
-    // C'est la seule arithmetique que le relecteur ait a faire, et elle vient
-    // du descripteur, pas d'une connaissance des types.
-    const FieldDesc* elem = champ("legs.[]");
-    const FieldDesc* phase = champ("legs.[].phase");
-    const FieldDesc* alt = champ("legs.[].altitude_ft");
-    const FieldDesc* vit = champ("legs.[].speed_kt_e2");
-    if (!elem || !phase || !alt || !vit) { ++ecarts; return; }
-    const FieldDesc* tout = champ("legs");
-    if (!tout || elem->size == 0) { ++ecarts; return; }
-    const uint32_t n = tout->bytes() / elem->size;
-    if (n != 4) ++ecarts;
-    for (uint32_t i = 0; i < n; ++i) {
-        const unsigned char* p = bytes + i * elem->size;
-        if (read_integer(*phase, p + phase->offset) != int64_t(attendu_phase(int(i)))) ++ecarts;
-        if (read_integer(*alt, p + alt->offset) != attendu_altitude(seq, int(i))) ++ecarts;
-        if (read_integer(*vit, p + vit->offset) != int64_t(25000 + i * 100)) ++ecarts;
+    // Tableau de STRUCTURES. Chaque element est un champ a part entiere,
+    // 'legs[2].altitude_ft', a son propre offset : le relecteur n'a aucune
+    // arithmetique a faire, il demande le chemin qu'il veut.
+    for (int i = 0; i < 4; ++i) {
+        char chemin[64];
+        std::snprintf(chemin, sizeof chemin, "legs[%d].phase", i);
+        if (entier(chemin) != int64_t(attendu_phase(i))) ++ecarts;
+        std::snprintf(chemin, sizeof chemin, "legs[%d].altitude_ft", i);
+        if (entier(chemin) != attendu_altitude(seq, i)) ++ecarts;
+        std::snprintf(chemin, sizeof chemin, "legs[%d].speed_kt_e2", i);
+        if (entier(chemin) != int64_t(25000 + i * 100)) ++ecarts;
     }
+    // Le dernier element doit exister, et pas un cinquieme.
+    if (!champ("legs[3].phase")) ++ecarts;
+    if (champ("legs[4].phase")) ++ecarts;
 
     // L'enum se rend en texte, ce qui est l'interet d'avoir le descripteur.
+    const FieldDesc* phase = champ("legs[0].phase");
+    if (!phase) { ++ecarts; return; }
     const EnumDesc* e = d.enum_of(*phase);
     if (!e || !e->name_of(int64_t(LegPhase::Cruise))
         || std::string(e->name_of(int64_t(LegPhase::Cruise))) != "Cruise") ++ecarts;
@@ -621,23 +619,33 @@ static void scenario_complex(const char* desc) {
     uint64_t a2b = 0, b2a = 0, rvn_ecarts = 0;
     uint64_t no, t;
     std::vector<const unsigned char*> fields;
-    // Position, dans la selection enregistree, du champ qui porte la sequence
-    // de la commande.
-    const FieldRef ref_seq = rr.descriptor().find("ComplexCommand.header.sequence");
-    int k_seq = -1;
-    for (std::size_t k = 0; k < rr.selection().size(); ++k)
-        if (rr.selection()[k] == ref_seq) k_seq = int(k);
+    // Position, dans la selection enregistree, des champs que l'on veut
+    // relire. legs[3] est la : le .rvn enregistre bien TOUS les elements d'un
+    // tableau de structures, et non le premier seulement.
+    auto place = [&](const char* chemin) -> int {
+        const FieldRef r = rr.descriptor().find(std::string("ComplexCommand.") + chemin);
+        for (std::size_t k = 0; k < rr.selection().size(); ++k)
+            if (rr.selection()[k] == r) return int(k);
+        return -1;
+    };
+    const int k_seq = place("header.sequence");
+    const int k_alt3 = place("legs[3].altitude_ft");
     CHECK(k_seq >= 0);
+    CHECK(k_alt3 >= 0);
     for (uint64_t n = 0; rr.read(n, no, t, fields); ++n) {
         if (rr.last_direction() == Direction::AtoB) ++a2b;
         else if (rr.last_direction() == Direction::BtoA) ++b2a;
-        if (k_seq >= 0) {
-            const FieldDesc* f = rr.descriptor().field(ref_seq);
-            const int64_t s = read_integer(*f, fields[std::size_t(k_seq)]);
-            // Chaque enregistrement porte l'etat de TOUS les champs choisis :
-            // une sequence de commande hors bornes serait une corruption.
-            if (s < 1 || s > int64_t(kCount)) ++rvn_ecarts;
-        }
+        if (k_seq < 0 || k_alt3 < 0) continue;
+        const FieldRef r_seq = rr.descriptor().find("ComplexCommand.header.sequence");
+        const FieldRef r_alt = rr.descriptor().find("ComplexCommand.legs[3].altitude_ft");
+        const int64_t s = read_integer(*rr.descriptor().field(r_seq),
+                                       fields[std::size_t(k_seq)]);
+        // Chaque enregistrement porte l'etat de TOUS les champs choisis : une
+        // sequence de commande hors bornes serait une corruption.
+        if (s < 1 || s > int64_t(kCount)) { ++rvn_ecarts; continue; }
+        const int64_t alt = read_integer(*rr.descriptor().field(r_alt),
+                                         fields[std::size_t(k_alt3)]);
+        if (alt != attendu_altitude(uint64_t(s), 3)) ++rvn_ecarts;
     }
     std::printf("   enregistres : %llu A>B, %llu B>A, ecarts %llu\n",
                 (unsigned long long)a2b, (unsigned long long)b2a,

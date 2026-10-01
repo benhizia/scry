@@ -209,11 +209,16 @@ vérifie aussi que `sizeof` du compilateur égale la taille annoncée par le
 descripteur : si elle différait, le relais découperait le flux au mauvais
 endroit et tout le reste serait faux.
 
-Un tableau de structures n'est décrit qu'une fois, `legs.[]`, avec sa taille ;
-les éléments suivants se lisent en avançant de cette taille. C'est la seule
-arithmétique que le relecteur ait à faire, et elle vient du descripteur. Fausser
-ce pas d'un seul octet fait apparaître 2700 écarts sur 300 messages — le test
-mord.
+Un tableau de structures est **expansé** : chaque élément est un champ à part
+entière, `legs[2].altitude_ft`, à son offset réel. Le relecteur n'a aucune
+arithmétique à faire, il demande le chemin qu'il veut. Et tout ce qui traite
+un champ en hérite sans rien changer : enregistrement, sentinelles, traces,
+colonnes de `raven-cat`, visualiseur.
+
+C'est une correction de ce scénario 06 : auparavant le descripteur ne décrivait
+que l'élément 0, si bien que `legs[1..3]` n'existaient nulle part et n'étaient
+ni enregistrables, ni observables. Un tableau de scalaires, lui, n'est pas
+expansé : il porte déjà son `count`.
 
 ## Choix de cette version
 

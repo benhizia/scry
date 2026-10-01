@@ -67,6 +67,10 @@ endif()
 
 if(RAVEN_DEMO)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  # Un descripteur depend du header ET du generateur : modifier raven.py sans
+  # cette dependance laisse un .rvndesc perime, et les tests mesurent alors
+  # l'ancien format sans que rien ne le signale. Ce piege s'est produit.
+  set(SCRY_RAVEN_GEN "${CMAKE_CURRENT_SOURCE_DIR}/../src/scry/codegen/raven.py")
   set(DEMO_GEN "${CMAKE_CURRENT_BINARY_DIR}/demo_gen")
   add_custom_command(
     OUTPUT "${DEMO_GEN}/raven_publish.gen.h" "${DEMO_GEN}/demo.rvndesc"
@@ -74,7 +78,7 @@ if(RAVEN_DEMO)
             ${Python3_EXECUTABLE} -m scry raven
             -H "${CMAKE_CURRENT_SOURCE_DIR}/demo/sim_state.h"
             --channel g_flight --channel g_sim --name demo -o "${DEMO_GEN}"
-    DEPENDS demo/sim_state.h
+    DEPENDS demo/sim_state.h "${SCRY_RAVEN_GEN}"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
     COMMENT "scry raven : glue de la demo")
   # Ecoute passive multicast : descripteurs des scenarios 03 et 04 de SwitchSpy.
@@ -90,7 +94,7 @@ if(RAVEN_DEMO)
               ${Python3_EXECUTABLE} -m scry raven
               -H "${CMAKE_CURRENT_SOURCE_DIR}/tests/net/${dir}/shared.hpp"
               --struct ${type} --name ${name} -o "${NET_GEN}"
-      DEPENDS tests/net/${dir}/shared.hpp
+      DEPENDS tests/net/${dir}/shared.hpp "${SCRY_RAVEN_GEN}"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
       COMMENT "scry raven : descripteur ${name}")
   endforeach()
@@ -115,7 +119,7 @@ if(RAVEN_DEMO)
               ${Python3_EXECUTABLE} -m scry raven
               -H "${CMAKE_CURRENT_SOURCE_DIR}/tests/net/${dir}/shared.hpp"
               ${struct_args} --name ${name} -o "${NET_GEN}"
-      DEPENDS tests/net/${dir}/shared.hpp
+      DEPENDS tests/net/${dir}/shared.hpp "${SCRY_RAVEN_GEN}"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
       COMMENT "scry raven : descripteur ${name}")
   endforeach()
