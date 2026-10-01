@@ -39,7 +39,8 @@ endif()
 
 # Moteur de l'enregistreur, en bibliotheque pour les tests.
 add_library(raven_engine STATIC src/engine/engine.cpp src/engine/sources.cpp
-  src/engine/shm_source.cpp src/engine/mcast_source.cpp src/engine/relay_source.cpp)
+  src/engine/shm_source.cpp src/engine/mcast_source.cpp src/engine/relay_source.cpp
+  src/engine/hub.cpp)
 target_include_directories(raven_engine PUBLIC src/engine)
 target_link_libraries(raven_engine PUBLIC raven_core Threads::Threads)
 if(UNIX AND NOT APPLE)

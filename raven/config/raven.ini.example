@@ -1,15 +1,21 @@
 # Exemple de configuration de RAVEN en mode relais.
 #
-#   raven --desc liaison.rvndesc --link raven.ini
-#   raven --desc liaison.rvndesc --link raven.ini#secours
+#   raven --link raven.ini              monte TOUTES les liaisons
+#   raven --link raven.ini#secours      une seule
 #
-# Sans nom de liaison, il doit y en avoir exactement une dans le fichier :
-# choisir a la place de celui qui le lit serait pire que de le lui demander.
+# Chaque liaison a son propre descripteur, son propre moteur et son propre
+# enregistrement : une liaison est un sujet independant. Le visualiseur les
+# voit toutes avec 'links' et passe de l'une a l'autre avec 'use <nom>'.
 #
 # Les noms de canaux sont ceux du descripteur .rvndesc, genere par
 # 'scry raven --struct <Type>' depuis les headers de la liaison.
 
 [link.principal]
+# Descripteur de CETTE liaison. A defaut, le --desc global de la ligne de
+# commande sert de repli.
+desc    = commandes.rvndesc
+# Modele de nom du fichier d'enregistrement, facultatif.
+record  = commandes_%t.rvn
 # tcp : un flux, decoupe en messages de la taille du canal du sens.
 # udp : un datagramme = un message.
 type    = tcp
@@ -23,6 +29,7 @@ a_to_b  = commande
 b_to_a  = acquittement
 
 [link.secours]
+desc    = mesures.rvndesc
 type    = udp
 listen  = :9001
 forward = 10.0.0.3:9002

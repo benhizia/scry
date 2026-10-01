@@ -125,9 +125,22 @@ entière (`legs[2].altitude_ft`), à son offset réel. Tout ce qui suit en
 hérite sans changement — enregistrement, sentinelles, traces, `raven-cat`,
 visualiseur — puisqu'un élément est devenu un champ comme un autre.
 
-Reste, dans cette étape, le relais de **plusieurs liaisons à la fois**, qui
-demande un moteur à plusieurs descripteurs. Détail dans `raven/README.md`,
-section « Relais ».
+Le relais de **plusieurs liaisons à la fois** est fait : `raven --link
+raven.ini` monte toutes les sections `[link.x]`, chacune avec son descripteur,
+son moteur, son déclencheur, son enregistrement et son fil d'acquisition. Le
+choix de conception — un moteur par liaison plutôt qu'un moteur à plusieurs
+descripteurs — et les deux commandes de protocole qui s'ajoutent (`links`,
+`use`) sont expliqués dans `raven/README.md`, section « Relais ». Le protocole
+reste compatible : `tests/test_raven_e2e.py` passe sans avoir été touché.
+
+**L'étape 3 est donc complète.** Ce qui reste du plan de reprise : l'étape 4
+(santé des liaisons, journal, performances, scénario 05), l'étape 5 (confort
+de build Windows) et l'étape 6 (rejeu vers le réseau).
+
+Deux choses que le visualiseur ne sait pas encore faire, et qu'il faudra
+décider : afficher plusieurs liaisons à la fois plutôt qu'une à la fois, et
+envoyer `links` / `use` depuis son IHM — aujourd'hui ces deux commandes se
+tapent à la main (`nc 127.0.0.1 47800`).
 
 - Plugins `TcpRelay` et `UdpRelay` dans `raven/src/engine/`, déclarés dans
   `sources.cpp` (`tcp:` et `udp:`), en s'appuyant sur `raven::net`.

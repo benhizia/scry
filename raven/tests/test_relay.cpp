@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "engine.h"
+#include "hub.h"
 #include "net/01_tcp_simple/shared.hpp"
 #include "net/02_udp_relay/shared.hpp"
 #include "net/06_complex_structs/shared.hpp"
@@ -655,6 +656,150 @@ static void scenario_complex(const char* desc) {
     std::remove(rvn.c_str());
 }
 
+// ------------------------------------------- plusieurs liaisons a la fois
+// Deux liaisons dans un seul raven : chacune son descripteur, sa source, son
+// moteur et son enregistrement. Le visualiseur passe de l'une a l'autre.
+static void scenario_multi(const char* desc_switch, const char* desc_route) {
+    std::printf("-- plusieurs liaisons\n");
+
+    // Deux equipements B. Chacun recoit un message d'une taille et repond d'une
+    // AUTRE : c'est le cas normal, un acquittement n'a pas la forme d'une
+    // commande, et le relais attend bien la taille du canal de chaque sens.
+    // Les deux types de reponse portent la sequence dans leurs huit premiers
+    // octets, ce qui suffit a l'appelant pour s'y retrouver.
+    struct Echo {
+        std::atomic<uint16_t> port{0};
+        std::atomic<bool> ready{false}, stop{false};
+        std::atomic<uint64_t> seen{0};
+        std::thread th;
+        void start(std::size_t in_size, std::size_t out_size) {
+            th = std::thread([this, in_size, out_size] {
+                net::TcpListener srv;
+                if (!srv.listen(net::Endpoint("127.0.0.1", 0))) return;
+                port = srv.local_port();
+                ready = true;
+                net::TcpSocket c = srv.accept(5000);
+                std::vector<unsigned char> in(in_size), out(out_size, 0);
+                while (c.valid() && !stop) {
+                    if (!c.recv_all(in.data(), in.size(), 200)) continue;
+                    ++seen;
+                    std::memcpy(out.data(), in.data(), 8);     // la sequence
+                    if (!c.send_all(out.data(), out.size(), 1000)) break;
+                }
+            });
+        }
+        void finish() { stop = true; if (th.joinable()) th.join(); }
+    };
+    Echo b1, b2;
+    b1.start(sizeof(SwitchCommand), sizeof(SwitchAck));
+    b2.start(sizeof(ComplexCommand), sizeof(ComplexReply));
+    for (int i = 0; i < 500 && !(b1.ready && b2.ready); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    CHECK(b1.ready && b2.ready);
+    if (!(b1.ready && b2.ready)) { b1.finish(); b2.finish(); return; }
+
+    const uint16_t p1 = free_tcp_port(), p2 = free_tcp_port();
+    std::vector<LinkConfig> cfgs(2);
+    char spec[256];
+    cfgs[0].name = "commandes";
+    cfgs[0].desc_path = desc_switch;
+    std::snprintf(spec, sizeof spec, "tcp:127.0.0.1:%u|127.0.0.1:%u|SwitchCommand|SwitchAck",
+                  unsigned(p1), unsigned(b1.port.load()));
+    cfgs[0].source = spec;
+    cfgs[0].record_path = "multi_cmd.rvn";
+    cfgs[1].name = "route";
+    cfgs[1].desc_path = desc_route;
+    std::snprintf(spec, sizeof spec,
+                  "tcp:127.0.0.1:%u|127.0.0.1:%u|ComplexCommand|ComplexReply",
+                  unsigned(p2), unsigned(b2.port.load()));
+    cfgs[1].source = spec;
+    cfgs[1].record_path = "multi_route.rvn";
+
+    Hub hub;
+    std::string err;
+    CHECK(hub.start(cfgs, err));
+    if (!err.empty()) std::printf("%s\n", err.c_str());
+    CHECK(hub.size() == 2);
+
+    // 'links' nomme les deux, et marque celle dont on parle.
+    const std::string liste = hub.command("links");
+    CHECK(liste.find("link 0 commandes") != std::string::npos);
+    CHECK(liste.find("link 1 route") != std::string::npos);
+    CHECK(liste.find(" *") != std::string::npos);
+
+    // Par defaut la premiere : le dialogue d'un visualiseur qui ignore 'use'
+    // est donc exactement celui d'avant.
+    CHECK(hub.command("hello").find("ComplexCommand") == std::string::npos);
+    CHECK(hub.command("hello").find("SwitchCommand") != std::string::npos);
+
+    // 'use' rend le descripteur de la nouvelle liaison : sans lui, le
+    // visualiseur ne saurait rien lire.
+    const std::string bascule = hub.command("use route");
+    CHECK(bascule.find("ComplexCommand") != std::string::npos);
+    CHECK(hub.command("hello").find("ComplexCommand") != std::string::npos);
+    // Par indice aussi.
+    CHECK(hub.command("use 0").find("SwitchCommand") != std::string::npos);
+    // Et un nom inconnu est refuse en nommant ce qui existe.
+    const std::string refus = hub.command("use inexistante");
+    CHECK(refus.find("err liaison inconnue") != std::string::npos);
+    CHECK(refus.find("link 1 route") != std::string::npos);
+
+    // Les deux liaisons enregistrent, chacune pour son compte.
+    hub.command("use commandes");
+    hub.command("rec_all 1");
+    hub.command("arm");
+    hub.command("use route");
+    hub.command("rec_all 1");
+    hub.command("arm");
+
+    // Du trafic sur les deux, en parallele.
+    net::TcpSocket a1, a2;
+    bool up1 = false, up2 = false;
+    for (int i = 0; i < 500 && !(up1 && up2); ++i) {
+        if (!up1) up1 = a1.connect(net::Endpoint("127.0.0.1", p1), 200);
+        if (!up2) up2 = a2.connect(net::Endpoint("127.0.0.1", p2), 200);
+        if (!(up1 && up2)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(up1 && up2);
+    const uint64_t kN = 50;
+    uint64_t echos1 = 0, echos2 = 0;
+    for (uint64_t seq = 1; seq <= kN && up1 && up2; ++seq) {
+        SwitchCommand c1;
+        std::memset(&c1, 0, sizeof c1);
+        c1.sequence = seq;
+        c1.port_id = uint16_t(seq % 48);
+        ComplexCommand c2;
+        remplir(c2, seq);
+        if (!a1.send_all(&c1, sizeof c1, 2000)) break;
+        if (!a2.send_all(&c2, sizeof c2, 2000)) break;
+        SwitchAck r1;
+        ComplexReply r2;
+        if (a1.recv_all(&r1, sizeof r1, 2000) && r1.sequence == seq) ++echos1;
+        if (a2.recv_all(&r2, sizeof r2, 2000) && r2.header.sequence == seq) ++echos2;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    hub.stop_all_recordings();
+    hub.stop();
+    b1.finish();
+    b2.finish();
+
+    std::printf("   echos %llu et %llu, vus par B %llu et %llu\n",
+                (unsigned long long)echos1, (unsigned long long)echos2,
+                (unsigned long long)b1.seen.load(), (unsigned long long)b2.seen.load());
+    CHECK(echos1 == kN);
+    CHECK(echos2 == kN);
+
+    // Chaque liaison a son propre .rvn, avec son propre descripteur.
+    for (const char* f : {"multi_cmd.rvn", "multi_route.rvn"}) {
+        RvnReader rr;
+        std::string e;
+        CHECK(rr.open(f, e));
+        if (!e.empty()) std::printf("%s : %s\n", f, e.c_str());
+        CHECK(rr.count() > 0);
+        std::remove(f);
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc < 4) {
         std::printf("usage : raven_relay_tests <switchlink.rvndesc> <sensors.rvndesc>"
@@ -669,6 +814,7 @@ int main(int argc, char** argv) {
     scenario_tcp(argv[1]);
     scenario_udp(argv[2]);
     scenario_complex(argv[3]);
+    scenario_multi(argv[1], argv[3]);
     std::printf(g_failed ? "%d echec(s)\n" : "tout passe\n", g_failed);
     return g_failed ? 1 : 0;
 }

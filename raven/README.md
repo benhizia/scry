@@ -154,10 +154,34 @@ raven --desc liaison.rvndesc --link raven.ini
 raven --desc liaison.rvndesc --link raven.ini#secours
 ```
 
-Sans nom de liaison, il doit y en avoir exactement une dans le fichier :
-sinon RAVEN refuse et les énumère, plutôt que de choisir à votre place. Une
-seule liaison à la fois pour l'instant — en relayer plusieurs demanderait un
-moteur à plusieurs descripteurs.
+### Plusieurs liaisons dans un seul RAVEN
+
+`raven --link raven.ini` monte **toutes** les sections `[link.x]` ;
+`--link raven.ini#secours` n'en monte qu'une. Chaque liaison a son descripteur
+(`desc =`), sa source, son moteur, son déclencheur et son enregistrement
+(`record =`), et son propre fil d'acquisition : une liaison muette ne retarde
+pas celle d'à côté.
+
+**Un moteur par liaison, et non un moteur à plusieurs descripteurs.** Un champ
+se désigne par un `FieldRef`, c'est-à-dire un canal et un champ. Un moteur
+unique aurait exigé une troisième coordonnée, la liaison, dans le `FieldRef` —
+donc dans le protocole texte, dans le visualiseur, dans l'en-tête du `.rvn`,
+dans les sentinelles et dans le déclencheur : tout ce qui touche à un champ.
+Un moteur par liaison ne change rien à cela, et donne en prime à chacune son
+propre déclencheur et son propre enregistrement, ce qui est bien ce que l'on
+veut.
+
+Le protocole gagne deux commandes, et **reste compatible** :
+
+| | |
+|---|---|
+| `links` | une ligne `link <i> <nom> <état> <trames> <source>` par liaison, `*` sur la courante |
+| `use <indice\|nom>` | choisit la liaison dont on parle ensuite, et rend son descripteur |
+
+Toute autre commande s'adresse à la liaison choisie, la première par défaut.
+Avec une seule liaison, le dialogue est donc exactement celui d'avant : un
+visualiseur qui ignore `links` et `use` continue de marcher — ce que
+`tests/test_raven_e2e.py` vérifie sans avoir été modifié.
 
 **Ce qui gouverne la conception.** Le transfert est la fonction vitale : si
 RAVEN le retarde, il ne se contente pas de mal observer, il dégrade le système
