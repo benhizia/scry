@@ -116,8 +116,10 @@ git worktree add ../switchspy origin/claude/describe-selected-011CUvmX5APbfMHaiM
 **Commencée** le 1er octobre 2026, branche `feature/raven-relais` : la file
 sans verrou, `Direction` dans `Frame` et dans le `.rvn`, les plugins `tcp:` et
 `udp:` avec un fil par sens, et les scénarios 01 et 02 automatisés
-(`raven_relay_tests`, 4/4 sous MSVC). Restent, dans cette étape, le fichier
-`raven.ini` avec ses sections `[link.x]` et le scénario 06. Détail dans
+(`raven_relay_tests`, 4/4 sous MSVC), et le fichier `raven.ini` avec ses
+sections `[link.x]` (`raven --link`). Reste, dans cette étape, le scénario 06
+(structs complexes) et le relais de plusieurs liaisons à la fois, qui
+demanderait un moteur à plusieurs descripteurs. Détail dans
 `raven/README.md`, section « Relais ».
 
 - Plugins `TcpRelay` et `UdpRelay` dans `raven/src/engine/`, déclarés dans

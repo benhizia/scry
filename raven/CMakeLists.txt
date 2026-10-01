@@ -30,7 +30,8 @@ add_library(raven_core STATIC
   src/core/descriptor.cpp
   src/core/rvn.cpp
   src/core/net.cpp
-  src/core/sockets.cpp)
+  src/core/sockets.cpp
+  src/core/ini.cpp)
 target_include_directories(raven_core PUBLIC include)
 if(WIN32)
   target_link_libraries(raven_core PUBLIC ws2_32)

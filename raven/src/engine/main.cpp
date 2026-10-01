@@ -11,8 +11,12 @@
 #include <string>
 #include <thread>
 
+#include <vector>
+
 #include "engine.h"
+#include "raven/ini.h"
 #include "raven/net.h"
+#include "sources.h"
 
 using namespace raven;
 
@@ -20,7 +24,38 @@ static std::atomic<bool> g_stop(false);
 static void on_signal(int) { g_stop = true; }
 
 static void usage() {
-    std::printf("usage : raven --desc <fichier.rvndesc> [--source shm:<nom>] [--port 47800]\n");
+    std::printf("usage : raven --desc <fichier.rvndesc> [--source shm:<nom>] [--port 47800]\n"
+                "        raven --desc <fichier.rvndesc> --link <raven.ini>[#<liaison>]\n");
+}
+
+// --link <fichier.ini>[#<nom>] : la source vient d'une section [link.<nom>].
+// Sans nom, il doit y avoir exactement une liaison dans le fichier : choisir
+// a la place de l'utilisateur serait pire que de le lui demander.
+static bool spec_from_ini(const std::string& arg, std::string& spec) {
+    std::string path = arg, wanted;
+    const std::size_t hash = arg.find('#');
+    if (hash != std::string::npos) { path = arg.substr(0, hash); wanted = arg.substr(hash + 1); }
+
+    Ini ini;
+    std::string err;
+    if (!ini.load(path, err)) { std::fprintf(stderr, "%s\n", err.c_str()); return false; }
+    const std::vector<std::string> links = ini.sections_with("link.");
+    if (links.empty()) {
+        std::fprintf(stderr, "%s : aucune section [link.<nom>]\n", path.c_str());
+        return false;
+    }
+    if (wanted.empty() && links.size() > 1) {
+        std::fprintf(stderr, "%s : %zu liaisons, preciser laquelle avec --link %s#<nom>\n",
+                     path.c_str(), links.size(), path.c_str());
+        for (const std::string& l : links) std::fprintf(stderr, "  %s\n", l.c_str() + 5);
+        return false;
+    }
+    const std::string section = wanted.empty() ? links[0] : "link." + wanted;
+    if (!link_spec(ini, section, spec, err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return false;
+    }
+    return true;
 }
 
 int main(int argc, char** argv) {
@@ -30,6 +65,9 @@ int main(int argc, char** argv) {
         const std::string a = argv[i];
         if (a == "--desc" && i + 1 < argc) desc_path = argv[++i];
         else if (a == "--source" && i + 1 < argc) source_spec = argv[++i];
+        else if (a == "--link" && i + 1 < argc) {
+            if (!spec_from_ini(argv[++i], source_spec)) return 1;
+        }
         else if (a == "--port" && i + 1 < argc) port = std::atoi(argv[++i]);
         else { usage(); return 2; }
     }

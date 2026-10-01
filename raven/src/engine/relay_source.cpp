@@ -38,6 +38,7 @@
 #include <thread>
 #include <vector>
 
+#include "raven/ini.h"
 #include "raven/producer.h"      // now_ns
 #include "raven/sockets.h"
 #include "raven/spsc.h"
@@ -371,6 +372,40 @@ private:
 };
 
 } // namespace
+
+// [link.x] d'un raven.ini -> specification de source. La section nomme les
+// deux extremites et le canal de chaque sens ; le reste du programme ne
+// connait que la chaine, comme pour n'importe quelle autre source.
+//
+//   [link.principal]
+//   type    = tcp            # ou udp
+//   listen  = 0.0.0.0:8001   # ou A nous joint
+//   forward = 10.0.0.2:8002  # ou nous joignons B
+//   a_to_b  = cmd            # canal du descripteur, sens A vers B
+//   b_to_a  = ack            # un sens laisse vide n'est pas relaye
+bool link_spec(const Ini& ini, const std::string& section, std::string& spec,
+               std::string& error) {
+    if (!ini.has(section)) { error = "section absente : [" + section + "]"; return false; }
+    const std::string type = ini.get(section, "type", "tcp");
+    if (type != "tcp" && type != "udp") {
+        error = "[" + section + "] type = " + type + " : attendu tcp ou udp";
+        return false;
+    }
+    const std::string listen = ini.get(section, "listen");
+    const std::string forward = ini.get(section, "forward");
+    if (listen.empty() || forward.empty()) {
+        error = "[" + section + "] listen et forward sont obligatoires";
+        return false;
+    }
+    const std::string a2b = ini.get(section, "a_to_b");
+    const std::string b2a = ini.get(section, "b_to_a");
+    if (a2b.empty() && b2a.empty()) {
+        error = "[" + section + "] nommer au moins a_to_b ou b_to_a";
+        return false;
+    }
+    spec = type + ":" + listen + "|" + forward + "|" + a2b + "|" + b2a;
+    return true;
+}
 
 std::unique_ptr<ISource> make_tcp_relay(const std::string& arg, const Descriptor& d) {
     return std::unique_ptr<ISource>(new TcpRelay(arg, d));

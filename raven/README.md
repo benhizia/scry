@@ -137,6 +137,28 @@ raven --desc liaison.rvndesc --source "udp:0.0.0.0:9001|10.0.0.2:9002|mesure|con
 Un seul type de struct par sens pour l'instant : TCP est un flux sans
 frontières, et c'est la taille du canal qui le découpe.
 
+La même chose dans un fichier, plus lisible dès qu'on y revient
+(`config/raven.ini.example`) :
+
+```ini
+[link.principal]
+type    = tcp
+listen  = 0.0.0.0:8001
+forward = 10.0.0.2:8002
+a_to_b  = commande
+b_to_a  = acquittement
+```
+
+```
+raven --desc liaison.rvndesc --link raven.ini
+raven --desc liaison.rvndesc --link raven.ini#secours
+```
+
+Sans nom de liaison, il doit y en avoir exactement une dans le fichier :
+sinon RAVEN refuse et les énumère, plutôt que de choisir à votre place. Une
+seule liaison à la fois pour l'instant — en relayer plusieurs demanderait un
+moteur à plusieurs descripteurs.
+
 **Ce qui gouverne la conception.** Le transfert est la fonction vitale : si
 RAVEN le retarde, il ne se contente pas de mal observer, il dégrade le système
 qu'il observe. D'où l'ordre, jamais autrement :

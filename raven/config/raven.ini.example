@@ -1,0 +1,30 @@
+# Exemple de configuration de RAVEN en mode relais.
+#
+#   raven --desc liaison.rvndesc --link raven.ini
+#   raven --desc liaison.rvndesc --link raven.ini#secours
+#
+# Sans nom de liaison, il doit y en avoir exactement une dans le fichier :
+# choisir a la place de celui qui le lit serait pire que de le lui demander.
+#
+# Les noms de canaux sont ceux du descripteur .rvndesc, genere par
+# 'scry raven --struct <Type>' depuis les headers de la liaison.
+
+[link.principal]
+# tcp : un flux, decoupe en messages de la taille du canal du sens.
+# udp : un datagramme = un message.
+type    = tcp
+# Ou l'equipement A nous joint. ':8001' ecoute sur toutes les interfaces.
+listen  = 0.0.0.0:8001
+# Ou nous joignons l'equipement B.
+forward = 10.0.0.2:8002
+# Un type de struct par sens. Un sens laisse vide n'est pas relaye : la
+# liaison ci-dessous, par exemple, n'ecoute que A vers B.
+a_to_b  = commande
+b_to_a  = acquittement
+
+[link.secours]
+type    = udp
+listen  = :9001
+forward = 10.0.0.3:9002
+a_to_b  = mesure
+b_to_a  =
