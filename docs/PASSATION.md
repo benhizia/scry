@@ -112,55 +112,28 @@ git worktree add ../switchspy origin/claude/describe-selected-011CUvmX5APbfMHaiM
 
 ### 3.1 Reprise de SwitchSpy (suite du plan)
 
-**Étape 3 : relais TCP et UDP.** RAVEN se place entre deux équipements A et B.
-**Commencée** le 1er octobre 2026, branche `feature/raven-relais` : la file
-sans verrou, `Direction` dans `Frame` et dans le `.rvn`, les plugins `tcp:` et
-`udp:` avec un fil par sens, et les scénarios 01 et 02 automatisés
-(`raven_relay_tests`, 4/4 sous MSVC), le fichier `raven.ini` avec ses sections
-`[link.x]` (`raven --link`), et les scénarios 01, 02 et 06 automatisés.
+**Étape 3 : relais TCP et UDP — FAITE** (branche `feature/raven-relais`, non
+fusionnée au 2 octobre 2026). RAVEN se place entre deux équipements A et B,
+fait passer les messages et en garde une copie.
 
-La limite trouvée en écrivant le scénario 06 est **corrigée** : le descripteur
-expanse désormais chaque élément d'un tableau de structures en champ à part
-entière (`legs[2].altitude_ft`), à son offset réel. Tout ce qui suit en
-hérite sans changement — enregistrement, sentinelles, traces, `raven-cat`,
-visualiseur — puisqu'un élément est devenu un champ comme un autre.
+| | |
+|---|---|
+| File sans verrou | `raven/spsc.h`, un producteur un consommateur. Le relais n'attend jamais le moteur |
+| Plugins `tcp:` et `udp:` | un fil par sens : recevoir, transférer, puis publier |
+| `Direction` | dans `Frame` et dans le `.rvn` (octet réservé de l'en-tête v2), colonne `dir` de `raven-cat` |
+| Configuration | `raven.ini`, sections `[link.x]`, `raven --link` |
+| Plusieurs liaisons | un moteur par liaison ; protocole `links` et `use`, compatible |
+| Visualiseur | zone fixe des liaisons, un onglet par sens |
+| Scénarios 01, 02, 06 | automatisés dans `raven_relay_tests`, 4/4 sous MSVC |
 
-Le relais de **plusieurs liaisons à la fois** est fait : `raven --link
-raven.ini` monte toutes les sections `[link.x]`, chacune avec son descripteur,
-son moteur, son déclencheur, son enregistrement et son fil d'acquisition. Le
-choix de conception — un moteur par liaison plutôt qu'un moteur à plusieurs
-descripteurs — et les deux commandes de protocole qui s'ajoutent (`links`,
-`use`) sont expliqués dans `raven/README.md`, section « Relais ». Le protocole
-reste compatible : `tests/test_raven_e2e.py` passe sans avoir été touché.
+Deux limites trouvées en chemin et **corrigées** : le descripteur n'expansait
+pas les éléments d'un tableau de structures, si bien que `legs[1..3]`
+n'existaient nulle part ; et les descripteurs générés au build ne dépendaient
+pas du générateur, ce qui laissait un `.rvndesc` périmé après modification de
+`raven.py`.
 
-**L'étape 3 est donc complète.** Ce qui reste du plan de reprise : l'étape 4
-(santé des liaisons, journal, performances, scénario 05), l'étape 5 (confort
-de build Windows) et l'étape 6 (rejeu vers le réseau).
-
-Le **visualiseur** suit : une zone fixe en haut liste les liaisons avec leur
-état et bascule d'un clic, et un onglet par sens (`A>B SwitchCommand`,
-`B>A SwitchAck`) montre les champs du canal correspondant. Détail et choix de
-dessin dans `raven/README.md`, section « Relais ».
-
-Ce qu'il ne sait **pas** encore faire, et qu'il faudra décider : afficher
-plusieurs liaisons **en même temps** côte à côte, plutôt qu'une à la fois.
-
-- Plugins `TcpRelay` et `UdpRelay` dans `raven/src/engine/`, déclarés dans
-  `sources.cpp` (`tcp:` et `udp:`), en s'appuyant sur `raven::net`.
-- Ajouter `Direction {AtoB, BtoA}` à `Frame` et au `.rvn` (octet réservé de
-  l'en-tête d'enregistrement v2, qui vaut 0 aujourd'hui).
-- **Un fil par sens : recevoir, transférer, puis pousser une copie** dans une
-  file sans verrou (SPSC) lue par le moteur. Le relais ne doit jamais attendre
-  le moteur ni le visualiseur. Aujourd'hui, `Engine::on_frame` est appelé sous
-  mutex depuis le fil d'acquisition : le relais doit passer par la file.
-- TCP est un flux : découper en messages de la taille de la struct du sens
-  (`recv_all`), un type de struct par sens pour commencer.
-- Configuration : `raven.ini` avec `[link.x]` (`listen`, `forward`, `a_to_b`,
-  `b_to_a`), analyseur INI repris de SwitchSpy (`src/config/ini_parser.cpp`).
-- Tests : scénarios 01 (TCP), 02 (UDP, CRC32) et 06 (structs complexes) de
-  SwitchSpy, automatisés comme `raven/tests/test_mcast.cpp`. Leurs
-  `shared.hpp` sont à reprendre sans les `static_assert` de taille : ceux des
-  scénarios 03 et 04 étaient faux sur x86-64, à vérifier pour les autres.
+Ce qui reste de cette étape, et qui demande une décision plutôt que du code :
+le visualiseur montre une liaison à la fois, pas plusieurs côte à côte.
 
 **Étape 4 : santé, journal, performances.**
 
