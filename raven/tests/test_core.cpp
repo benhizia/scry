@@ -7,7 +7,9 @@
 #include <vector>
 
 #include "engine.h"
+#include "raven/ini.h"
 #include "raven/net.h"
+#include "sources.h"
 #include "raven/producer.h"
 #include "raven/rvn.h"
 
@@ -191,11 +193,91 @@ static void test_publication_non_bloquante() {
     CHECK(client.dropped() == avant);
 }
 
+// Lecteur INI et traduction d'une section [link.x] en source. Ce qui compte
+// ici : un fichier mal ecrit doit dire ce qui cloche, pas se taire.
+static void test_ini_et_liaisons() {
+    // Litteral brut : le texte d'un fichier INI se lit mieux tel quel.
+    const char* texte = R"(# commentaire de tete
+
+[global]
+  mode = relay   # commentaire en bout de ligne
+  titre = "avec # dedans"
+
+[link.principal]
+type    = tcp
+listen  = 0.0.0.0:8001
+forward = 10.0.0.2:8002
+a_to_b  = cmd
+b_to_a  = ack
+
+[link.secours]
+type    = udp
+listen  = :9001
+forward = 10.0.0.3:9002
+a_to_b  = mesure
+b_to_a  =
+)";
+    Ini ini;
+    std::string err;
+    CHECK(ini.parse(texte, err));
+    if (!err.empty()) std::printf("%s\n", err.c_str());
+
+    CHECK(ini.get("global", "mode") == "relay");
+    // Un # entre guillemets fait partie de la valeur et n'ouvre pas un
+    // commentaire : une adresse ou un libelle a le droit d'en contenir.
+    CHECK(ini.get("global", "titre") == "avec # dedans");
+    CHECK(ini.get("global", "absente", "defaut") == "defaut");
+    CHECK(!ini.has("link.inconnue"));
+
+    // L'ordre du fichier est conserve : il porte du sens pour qui l'ecrit.
+    const std::vector<std::string> liens = ini.sections_with("link.");
+    CHECK(liens.size() == 2);
+    CHECK(liens.size() == 2 && liens[0] == "link.principal" && liens[1] == "link.secours");
+
+    std::string spec;
+    CHECK(link_spec(ini, "link.principal", spec, err));
+    CHECK(spec == "tcp:0.0.0.0:8001|10.0.0.2:8002|cmd|ack");
+    // Un sens laisse vide n'est pas relaye, et cela se lit dans la chaine.
+    CHECK(link_spec(ini, "link.secours", spec, err));
+    CHECK(spec == "udp::9001|10.0.0.3:9002|mesure|");
+
+    // Chaque refus doit nommer ce qui manque.
+    CHECK(!link_spec(ini, "link.absente", spec, err));
+    CHECK(err.find("section absente") != std::string::npos);
+
+    Ini mauvais;
+    CHECK(mauvais.parse(R"([link.x]
+type = serie
+listen = :1
+forward = :2
+a_to_b = c
+)", err));
+    CHECK(!link_spec(mauvais, "link.x", spec, err));
+    CHECK(err.find("attendu tcp ou udp") != std::string::npos);
+
+    CHECK(mauvais.parse("[link.x]\ntype = tcp\na_to_b = c\n", err));
+    CHECK(!link_spec(mauvais, "link.x", spec, err));
+    CHECK(err.find("listen et forward") != std::string::npos);
+
+    CHECK(mauvais.parse("[link.x]\ntype = tcp\nlisten = :1\nforward = :2\n", err));
+    CHECK(!link_spec(mauvais, "link.x", spec, err));
+    CHECK(err.find("a_to_b ou b_to_a") != std::string::npos);
+
+    // Erreurs de syntaxe : la ligne fautive est citee.
+    CHECK(!mauvais.parse("[link.x\n", err));
+    CHECK(err.find("section mal formee") != std::string::npos);
+    CHECK(!mauvais.parse("cle = valeur\n", err));
+    CHECK(err.find("hors de toute section") != std::string::npos);
+    CHECK(!mauvais.parse("[a]\nune ligne sans egal\n", err));
+    CHECK(err.find("ligne 2") != std::string::npos);
+}
+
 int main() {
     test_descriptor();
     test_ring();
     test_engine_record();
     test_publication_non_bloquante();
+    test_ini_et_liaisons();
     std::printf(g_failed ? "%d echec(s)\n" : "tous les tests passent\n", g_failed);
     return g_failed ? 1 : 0;
 }

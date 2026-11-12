@@ -82,6 +82,21 @@ class _Builder(object):
                 kind = "struct"
                 out.append("field %d %d struct %d %d 1 -1 - %s"
                            % (idx, parent, off, fld.size or 0, path))
+                # Tableau de structures : chaque element devient un champ a
+                # part entiere, a son propre offset. Le modele ne decrit que
+                # l'element 0 ; on le remet une fois par element en decalant la
+                # base, ce qui decale du meme coup tous ses membres.
+                #
+                # Sans cela, seul le premier element serait enregistrable,
+                # observable et tracable : le descripteur n'aurait decrit que
+                # legs[0], et legs[1..3] n'auraient existe nulle part.
+                if (fld.kind == model.ARRAY and fld.array_len and fld.size
+                        and len(fld.children) == 1):
+                    elem = fld.children[0]
+                    esize = fld.size // fld.array_len
+                    for i in range(fld.array_len):
+                        emit(elem, idx, "%s[%d]" % (path, i), base - i * esize)
+                    return
                 for c in fld.children:
                     if c.is_static or c.kind == model.FUNCTION:
                         continue

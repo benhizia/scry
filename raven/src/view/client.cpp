@@ -26,11 +26,44 @@ void Client::tick() {
         next_try_ = seconds() + 1.0;
         if (!sock_.connect(host_, port_)) return;
         watch_.clear();
+        links_.clear();
+        next_links_ = 0;
         send("hello");
     }
     std::vector<std::string> lines;
     if (!sock_.receive(lines, 0)) last_error = "connexion perdue";
     for (const std::string& l : lines) handle(l);
+    // L'etat des liaisons est demande une fois par seconde : il sert a tenir
+    // la zone fixe a jour, y compris pour les liaisons que l'on ne regarde pas.
+    if (has_desc_ && seconds() >= next_links_) {
+        next_links_ = seconds() + 1.0;
+        send("links");
+    }
+}
+
+const LinkInfo* Client::current_link() const {
+    for (const LinkInfo& l : links_)
+        if (l.current) return &l;
+    return links_.empty() ? nullptr : &links_.front();
+}
+
+std::string Client::channel_direction(int channel) const {
+    const LinkInfo* l = current_link();
+    if (!l) return std::string();
+    auto it = l->channels.find(channel);
+    return it == l->channels.end() ? std::string() : it->second.first;
+}
+
+void Client::use_link(const std::string& name) {
+    // Les valeurs, traces et evenements sont indexes par (canal, champ) : d'une
+    // liaison a l'autre, les memes indices designent d'autres champs. Tout
+     // repartir de zero est la seule lecture honnete.
+    values.clear();
+    traces.clear();
+    events.clear();
+    sentinel_last.clear();
+    watch_.clear();
+    send("use " + name);
 }
 
 void Client::send(const std::string& cmd) {
@@ -63,7 +96,24 @@ void Client::handle(const std::string& line) {
     std::string tag, a;
     in >> tag;
     FieldRef r;
-    if (tag == "desc_begin") {
+    if (tag == "link") {
+        // Premiere ligne d'un lot : on reconstruit la liste, puis on la
+        // publie d'un coup, pour que l'IHM ne voie jamais un etat a moitie lu.
+        LinkInfo l;
+        in >> l.index >> l.name >> l.state >> l.frames >> l.source;
+        std::string rest;
+        if (in >> rest) l.current = rest == "*";
+        if (l.index == 0) links_building_.clear();
+        links_building_.push_back(l);
+        links_ = links_building_;
+    } else if (tag == "chan") {
+        int li = 0, ci = 0;
+        std::string dir, name;
+        in >> li >> ci >> dir >> name;
+        for (LinkInfo& l : links_building_)
+            if (l.index == li) l.channels[ci] = std::make_pair(dir == "-" ? "" : dir, name);
+        links_ = links_building_;
+    } else if (tag == "desc_begin") {
         in_desc_ = true;
         desc_text_.clear();
     } else if (tag == "cfg_begin") {

@@ -26,6 +26,18 @@ struct Trace {
     uint64_t last_frame = 0;
 };
 
+// Une liaison telle que raven.exe la decrit, avec le sens de chacun de ses
+// canaux. Le sens vient du montage, pas du descripteur : c'est 'links' qui le
+// donne.
+struct LinkInfo {
+    int index = 0;
+    std::string name, state, source;
+    uint64_t frames = 0;
+    bool current = false;
+    // Par canal : son sens ("A>B", "B>A" ou vide) et son nom.
+    std::map<int, std::pair<std::string, std::string>> channels;
+};
+
 class Client {
 public:
     void set_address(const std::string& host, int port) { host_ = host; port_ = port; }
@@ -39,6 +51,13 @@ public:
     bool ready() const { return connected() && has_desc_; }
     const Descriptor& desc() const { return desc_; }
     std::string address() const { return host_ + ":" + std::to_string(port_); }
+
+    // Liaisons montees par raven.exe, rafraichies une fois par seconde.
+    const std::vector<LinkInfo>& links() const { return links_; }
+    const LinkInfo* current_link() const;
+    // Sens d'un canal de la liaison courante, "" s'il n'en a pas.
+    std::string channel_direction(int channel) const;
+    void use_link(const std::string& name);
 
     // Miroir de la configuration de raven.exe.
     std::set<FieldRef> rec, sen, trc;
@@ -74,6 +93,8 @@ private:
     bool in_desc_ = false, in_cfg_ = false;
     std::string desc_text_;
     std::vector<FieldRef> watch_;
+    std::vector<LinkInfo> links_, links_building_;
+    double next_links_ = 0;
 };
 
 } // namespace raven

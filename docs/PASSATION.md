@@ -112,24 +112,28 @@ git worktree add ../switchspy origin/claude/describe-selected-011CUvmX5APbfMHaiM
 
 ### 3.1 Reprise de SwitchSpy (suite du plan)
 
-**Étape 3 : relais TCP et UDP.** RAVEN se place entre deux équipements A et B.
+**Étape 3 : relais TCP et UDP — FAITE** (branche `feature/raven-relais`, non
+fusionnée au 2 octobre 2026). RAVEN se place entre deux équipements A et B,
+fait passer les messages et en garde une copie.
 
-- Plugins `TcpRelay` et `UdpRelay` dans `raven/src/engine/`, déclarés dans
-  `sources.cpp` (`tcp:` et `udp:`), en s'appuyant sur `raven::net`.
-- Ajouter `Direction {AtoB, BtoA}` à `Frame` et au `.rvn` (octet réservé de
-  l'en-tête d'enregistrement v2, qui vaut 0 aujourd'hui).
-- **Un fil par sens : recevoir, transférer, puis pousser une copie** dans une
-  file sans verrou (SPSC) lue par le moteur. Le relais ne doit jamais attendre
-  le moteur ni le visualiseur. Aujourd'hui, `Engine::on_frame` est appelé sous
-  mutex depuis le fil d'acquisition : le relais doit passer par la file.
-- TCP est un flux : découper en messages de la taille de la struct du sens
-  (`recv_all`), un type de struct par sens pour commencer.
-- Configuration : `raven.ini` avec `[link.x]` (`listen`, `forward`, `a_to_b`,
-  `b_to_a`), analyseur INI repris de SwitchSpy (`src/config/ini_parser.cpp`).
-- Tests : scénarios 01 (TCP), 02 (UDP, CRC32) et 06 (structs complexes) de
-  SwitchSpy, automatisés comme `raven/tests/test_mcast.cpp`. Leurs
-  `shared.hpp` sont à reprendre sans les `static_assert` de taille : ceux des
-  scénarios 03 et 04 étaient faux sur x86-64, à vérifier pour les autres.
+| | |
+|---|---|
+| File sans verrou | `raven/spsc.h`, un producteur un consommateur. Le relais n'attend jamais le moteur |
+| Plugins `tcp:` et `udp:` | un fil par sens : recevoir, transférer, puis publier |
+| `Direction` | dans `Frame` et dans le `.rvn` (octet réservé de l'en-tête v2), colonne `dir` de `raven-cat` |
+| Configuration | `raven.ini`, sections `[link.x]`, `raven --link` |
+| Plusieurs liaisons | un moteur par liaison ; protocole `links` et `use`, compatible |
+| Visualiseur | zone fixe des liaisons, un onglet par sens |
+| Scénarios 01, 02, 06 | automatisés dans `raven_relay_tests`, 4/4 sous MSVC |
+
+Deux limites trouvées en chemin et **corrigées** : le descripteur n'expansait
+pas les éléments d'un tableau de structures, si bien que `legs[1..3]`
+n'existaient nulle part ; et les descripteurs générés au build ne dépendaient
+pas du générateur, ce qui laissait un `.rvndesc` périmé après modification de
+`raven.py`.
+
+Ce qui reste de cette étape, et qui demande une décision plutôt que du code :
+le visualiseur montre une liaison à la fois, pas plusieurs côte à côte.
 
 **Étape 4 : santé, journal, performances.**
 

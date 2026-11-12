@@ -114,7 +114,7 @@ void Engine::on_frame(const Frame& f) {
         start_recording(f);
     // Un enregistrement par trame ou par message : l'image complete des champs
     // choisis, et le canal qui vient d'etre mis a jour.
-    if (state_ == RecState::Recording && !writer_.write(f.no, f.t_ns, img, f.channel))
+    if (state_ == RecState::Recording && !writer_.write(f.no, f.t_ns, img, f.channel, f.dir))
         stop_recording("erreur d'ecriture, enregistrement arrete");
 }
 

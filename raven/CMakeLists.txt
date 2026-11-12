@@ -30,7 +30,8 @@ add_library(raven_core STATIC
   src/core/descriptor.cpp
   src/core/rvn.cpp
   src/core/net.cpp
-  src/core/sockets.cpp)
+  src/core/sockets.cpp
+  src/core/ini.cpp)
 target_include_directories(raven_core PUBLIC include)
 if(WIN32)
   target_link_libraries(raven_core PUBLIC ws2_32)
@@ -38,7 +39,8 @@ endif()
 
 # Moteur de l'enregistreur, en bibliotheque pour les tests.
 add_library(raven_engine STATIC src/engine/engine.cpp src/engine/sources.cpp
-  src/engine/shm_source.cpp src/engine/mcast_source.cpp)
+  src/engine/shm_source.cpp src/engine/mcast_source.cpp src/engine/relay_source.cpp
+  src/engine/hub.cpp)
 target_include_directories(raven_engine PUBLIC src/engine)
 target_link_libraries(raven_engine PUBLIC raven_core Threads::Threads)
 if(UNIX AND NOT APPLE)
@@ -66,6 +68,10 @@ endif()
 
 if(RAVEN_DEMO)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  # Un descripteur depend du header ET du generateur : modifier raven.py sans
+  # cette dependance laisse un .rvndesc perime, et les tests mesurent alors
+  # l'ancien format sans que rien ne le signale. Ce piege s'est produit.
+  set(SCRY_RAVEN_GEN "${CMAKE_CURRENT_SOURCE_DIR}/../src/scry/codegen/raven.py")
   set(DEMO_GEN "${CMAKE_CURRENT_BINARY_DIR}/demo_gen")
   add_custom_command(
     OUTPUT "${DEMO_GEN}/raven_publish.gen.h" "${DEMO_GEN}/demo.rvndesc"
@@ -73,7 +79,7 @@ if(RAVEN_DEMO)
             ${Python3_EXECUTABLE} -m scry raven
             -H "${CMAKE_CURRENT_SOURCE_DIR}/demo/sim_state.h"
             --channel g_flight --channel g_sim --name demo -o "${DEMO_GEN}"
-    DEPENDS demo/sim_state.h
+    DEPENDS demo/sim_state.h "${SCRY_RAVEN_GEN}"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
     COMMENT "scry raven : glue de la demo")
   # Ecoute passive multicast : descripteurs des scenarios 03 et 04 de SwitchSpy.
@@ -89,10 +95,44 @@ if(RAVEN_DEMO)
               ${Python3_EXECUTABLE} -m scry raven
               -H "${CMAKE_CURRENT_SOURCE_DIR}/tests/net/${dir}/shared.hpp"
               --struct ${type} --name ${name} -o "${NET_GEN}"
-      DEPENDS tests/net/${dir}/shared.hpp
+      DEPENDS tests/net/${dir}/shared.hpp "${SCRY_RAVEN_GEN}"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
       COMMENT "scry raven : descripteur ${name}")
   endforeach()
+  # Relais : un type de struct par sens, donc deux canaux par liaison.
+  # '+' separe les types : un ';' ferait une liste CMake des le depart, et le
+  # decoupage sur ':' ne rendrait plus trois morceaux.
+  foreach(trio "01_tcp_simple:SwitchCommand+SwitchAck:switchlink"
+               "02_udp_relay:SensorReading+SensorSetpoint:sensors"
+               "06_complex_structs:ComplexCommand+ComplexReply:route")
+    string(REPLACE ":" ";" parts "${trio}")
+    list(GET parts 0 dir)
+    list(GET parts 1 joined)
+    list(GET parts 2 name)
+    string(REPLACE "+" ";" types "${joined}")
+    set(struct_args "")
+    foreach(type ${types})
+      list(APPEND struct_args --struct ${type})
+    endforeach()
+    add_custom_command(
+      OUTPUT "${NET_GEN}/${name}.rvndesc"
+      COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/../src"
+              ${Python3_EXECUTABLE} -m scry raven
+              -H "${CMAKE_CURRENT_SOURCE_DIR}/tests/net/${dir}/shared.hpp"
+              ${struct_args} --name ${name} -o "${NET_GEN}"
+      DEPENDS tests/net/${dir}/shared.hpp "${SCRY_RAVEN_GEN}"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+      COMMENT "scry raven : descripteur ${name}")
+  endforeach()
+  add_executable(raven_relay_tests tests/test_relay.cpp
+    "${NET_GEN}/switchlink.rvndesc" "${NET_GEN}/sensors.rvndesc"
+    "${NET_GEN}/route.rvndesc")
+  target_include_directories(raven_relay_tests PRIVATE tests)
+  target_link_libraries(raven_relay_tests PRIVATE raven_engine)
+  add_test(NAME raven_relay_tests
+           COMMAND raven_relay_tests "${NET_GEN}/switchlink.rvndesc" "${NET_GEN}/sensors.rvndesc"
+                   "${NET_GEN}/route.rvndesc")
+
   add_executable(raven_mcast_tests tests/test_mcast.cpp
     "${NET_GEN}/telemetry.rvndesc" "${NET_GEN}/market.rvndesc")
   target_include_directories(raven_mcast_tests PRIVATE tests)

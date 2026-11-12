@@ -11,8 +11,13 @@
 #include <string>
 #include <thread>
 
+#include <vector>
+
 #include "engine.h"
+#include "hub.h"
+#include "raven/ini.h"
 #include "raven/net.h"
+#include "sources.h"
 
 using namespace raven;
 
@@ -20,47 +25,62 @@ static std::atomic<bool> g_stop(false);
 static void on_signal(int) { g_stop = true; }
 
 static void usage() {
-    std::printf("usage : raven --desc <fichier.rvndesc> [--source shm:<nom>] [--port 47800]\n");
+    std::printf("usage : raven --desc <fichier.rvndesc> [--source shm:<nom>] [--port 47800]\n"
+                "        raven --link <raven.ini>[#<liaison>] [--desc <defaut.rvndesc>]\n"
+                "\n"
+                "Sans #liaison, toutes les sections [link.x] du fichier sont montees ;\n"
+                "le visualiseur passe de l'une a l'autre avec 'use <indice|nom>'.\n");
 }
 
 int main(int argc, char** argv) {
-    std::string desc_path, source_spec = "shm:raven";
+    std::string desc_path, source_spec, ini_arg;
     int port = 47800;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--desc" && i + 1 < argc) desc_path = argv[++i];
         else if (a == "--source" && i + 1 < argc) source_spec = argv[++i];
+        else if (a == "--link" && i + 1 < argc) ini_arg = argv[++i];
         else if (a == "--port" && i + 1 < argc) port = std::atoi(argv[++i]);
         else { usage(); return 2; }
     }
-    if (desc_path.empty()) { usage(); return 2; }
 
-    Descriptor desc;
+    // Deux facons de decrire ce que l'on observe, qui aboutissent a la meme
+    // chose : une liste de liaisons. Une seule source reste une liaison.
+    std::vector<LinkConfig> links;
     std::string err;
-    if (!desc.load(desc_path, err)) { std::fprintf(stderr, "descripteur : %s\n", err.c_str()); return 1; }
-    auto source = make_source(source_spec, desc);
-    if (!source) { std::fprintf(stderr, "source inconnue : %s\n", source_spec.c_str()); return 1; }
+    if (!ini_arg.empty()) {
+        std::string path = ini_arg, only;
+        const std::size_t hash = ini_arg.find('#');
+        if (hash != std::string::npos) {
+            path = ini_arg.substr(0, hash);
+            only = ini_arg.substr(hash + 1);
+        }
+        Ini ini;
+        if (!ini.load(path, err)) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
+        if (!load_links(ini, only, desc_path, links, err)) {
+            std::fprintf(stderr, "%s : %s\n", path.c_str(), err.c_str());
+            return 1;
+        }
+    } else {
+        if (desc_path.empty()) { usage(); return 2; }
+        LinkConfig c;
+        c.name = "principal";
+        c.desc_path = desc_path;
+        c.source = source_spec.empty() ? "shm:raven" : source_spec;
+        links.push_back(c);
+    }
 
     net_init();
     Listener listener;
     if (!listener.listen(port)) { std::fprintf(stderr, "port %d indisponible\n", port); return 1; }
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
-    std::printf("raven : %s, %zu canaux, trame de %u octets, source %s, port %d\n",
-                desc_path.c_str(), desc.channels().size(), desc.frame_size(),
-                source->describe().c_str(), port);
+
+    Hub hub;
+    if (!hub.start(links, err)) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
+    std::printf("raven : %zu liaison(s), port %d\n%s", hub.size(), port,
+                hub.summary().c_str());
     std::fflush(stdout);
-
-    Engine engine(desc);
-
-    // Fil d'acquisition : scrute la source et passe chaque trame au moteur.
-    std::thread acquisition([&] {
-        while (!g_stop) {
-            const size_t n = source->poll([&](const Frame& f) { engine.on_frame(f); });
-            engine.set_source(source->connected(), source->lost(), source->error());
-            if (n == 0) std::this_thread::sleep_for(std::chrono::microseconds(500));
-        }
-    });
 
     // Fil principal : un visualiseur a la fois, qui peut aller et venir.
     LineSocket client;
@@ -75,17 +95,17 @@ int main(int argc, char** argv) {
         }
         std::vector<std::string> lines;
         if (!client.receive(lines, 20)) {
-            engine.command("watch");                  // plus personne ne regarde
+            hub.command("watch");                     // plus personne ne regarde
             std::printf("visualiseur deconnecte\n");
             std::fflush(stdout);
             continue;
         }
         // Reponses aux commandes : jamais abandonnees. Mises a jour : le
         // visualiseur affiche un etat, on saute un lot plutot que d'attendre.
-        for (const std::string& l : lines) client.queue(engine.command(l));
+        for (const std::string& l : lines) client.queue(hub.command(l));
         const auto now = std::chrono::steady_clock::now();
         if (now >= next_update) {                     // ~20 mises a jour par seconde
-            client.queue(engine.updates(), true);
+            client.queue(hub.updates(), true);
             next_update = now + std::chrono::milliseconds(50);
         }
         if (!client.flush()) continue;
@@ -97,8 +117,8 @@ int main(int argc, char** argv) {
             next_report = now + std::chrono::seconds(1);
         }
     }
-    engine.command("stop");                           // ferme proprement un .rvn en cours
-    acquisition.join();
-    std::printf("raven : arret, %llu trames recues\n", (unsigned long long)engine.frames());
+    hub.stop_all_recordings();                        // ferme chaque .rvn en cours
+    hub.stop();
+    std::printf("raven : arret\n");
     return 0;
 }

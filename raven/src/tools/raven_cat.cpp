@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
         for (const FieldRef& f : r.selection()) std::printf("  %s\n", d.full_path(f).c_str());
         return 0;
     }
-    std::printf("frame,t_ns,channel");
+    std::printf("frame,t_ns,channel,dir");
     for (const FieldRef& f : r.selection()) {
         const FieldDesc& fd = *d.field(f);
         for (uint32_t i = 0; i < fd.count; ++i)
@@ -33,8 +33,10 @@ int main(int argc, char** argv) {
     std::vector<const unsigned char*> fields;
     for (uint64_t n = 0; r.read(n, no, t, fields); ++n) {
         const ChannelDesc* ch = d.channel(r.last_channel());
-        std::printf("%llu,%llu,%s", (unsigned long long)no, (unsigned long long)t,
-                    ch ? ch->name.c_str() : "*");
+        // 'dir' est vide hors relais : une source qui observe sans s'interposer
+        // n'a pas de sens a declarer.
+        std::printf("%llu,%llu,%s,%s", (unsigned long long)no, (unsigned long long)t,
+                    ch ? ch->name.c_str() : "*", direction_name(r.last_direction()));
         for (size_t k = 0; k < fields.size(); ++k) {
             const FieldDesc& fd = *d.field(r.selection()[k]);
             for (uint32_t i = 0; i < fd.count; ++i)

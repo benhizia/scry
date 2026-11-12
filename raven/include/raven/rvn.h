@@ -9,8 +9,10 @@
 //   <enregistrements binaires>
 //
 // Chaque enregistrement : numero de trame (u64), horodatage (u64 ns), canal mis
-// a jour (i32, -1 pour une trame complete ; absent en version 1), reserve
-// (u32), puis les octets de chaque champ selectionne, dans l'ordre des lignes
+// a jour (i32, -1 pour une trame complete ; absent en version 1), puis un u32
+// dont le premier octet porte le sens du message pour un relais (0 sans objet,
+// 1 pour A vers B, 2 pour B vers A) et les trois autres restent reserves ;
+// puis les octets de chaque champ selectionne, dans l'ordre des lignes
 // 'select'. En reseau, chaque message produit un enregistrement : l'etat de
 // tous les champs choisis a cet instant, et le canal qui vient de changer. La
 // taille fixe rend la n-ieme trame accessible par un simple calcul, et un
@@ -22,6 +24,7 @@
 #include <vector>
 
 #include "raven/descriptor.h"
+#include "raven/source.h"   // Direction
 
 namespace raven {
 
@@ -31,7 +34,8 @@ public:
     bool open(const std::string& path, const Descriptor& d, const std::vector<FieldRef>& sel,
               const std::string& trigger, std::string& error);
     // 'frame' est la trame complete, de taille d.frame_size().
-    bool write(uint64_t frame_no, uint64_t t_ns, const unsigned char* frame, int channel = -1);
+    bool write(uint64_t frame_no, uint64_t t_ns, const unsigned char* frame, int channel = -1,
+               Direction dir = Direction::None);
     void close();
 
     bool is_open() const { return f_ != nullptr; }
@@ -65,6 +69,7 @@ public:
     bool read(uint64_t n, uint64_t& frame_no, uint64_t& t_ns,
               std::vector<const unsigned char*>& fields);
     int last_channel() const { return last_channel_; }   // canal de la derniere lecture
+    Direction last_direction() const { return last_dir_; }   // sens, None hors relais
     int version() const { return version_; }
 
 private:
@@ -78,6 +83,7 @@ private:
     uint64_t count_ = 0;
     uint32_t head_ = 16;                // en-tete d'enregistrement : 16 (v1) ou 24 (v2)
     int version_ = 0, last_channel_ = -1;
+    Direction last_dir_ = Direction::None;
     std::vector<unsigned char> buf_;
 };
 
